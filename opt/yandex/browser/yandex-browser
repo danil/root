@@ -38,9 +38,8 @@ elif [ -n "${YANDEX_BROWSER_FLAGS-}" ]; then
 fi
 
 # Proxy settings
-if [ -n "${no_proxy-}" ]; then
-  YANDEX_BROWSER_ARGS+=("--proxy-bypass-list=$no_proxy")
-fi
+[ -z "${no_proxy-}" ] ||
+	echo >&2 "warning: environment variable \`no_proxy' not supported"
 
 if [ -z "${auto_proxy-}" ]; then
 	for use_proxy in "${https_proxy-}" "${http_proxy-}" "${all_proxy-}"; do
