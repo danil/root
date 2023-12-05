@@ -1,1 +1,0 @@
-../../Cellar/ripgrep/13.0.0/etc/bash_completion.d/rg.bash

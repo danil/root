@@ -1,1 +1,1 @@
-../../Cellar/git/2.42.0/etc/bash_completion.d/git-completion.bash
+../../Cellar/git/2.43.0/etc/bash_completion.d/git-completion.bash

@@ -1,1 +1,1 @@
-../../Cellar/git/2.42.0/etc/bash_completion.d/git-prompt.sh
+../../Cellar/git/2.43.0/etc/bash_completion.d/git-prompt.sh
