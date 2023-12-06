@@ -15,10 +15,6 @@
 	<key>ProgramArguments</key>
 	<array>
 		<string>/home/linuxbrew/.linuxbrew/opt/nats-streaming-server/bin/nats-streaming-server</string>
-		<string>--port</string>
-		<string>4223</string>
-		<string>--cluster_id</string>
-		<string>your_cluster_id</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
