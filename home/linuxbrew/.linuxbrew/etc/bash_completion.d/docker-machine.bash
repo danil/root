@@ -1,1 +1,1 @@
-../../Cellar/docker-machine/0.16.2-gitlab.23/etc/bash_completion.d/docker-machine.bash
+../../Cellar/docker-machine/0.16.2-gitlab.25/etc/bash_completion.d/docker-machine.bash
