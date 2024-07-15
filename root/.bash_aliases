@@ -1,0 +1,1 @@
+/home/danil/.bash_aliases

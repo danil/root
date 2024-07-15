@@ -1,0 +1,1 @@
+/home/danil/.emacs.d
