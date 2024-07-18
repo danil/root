@@ -1,5 +1,0 @@
-[Desktop Entry]
-Encoding=UTF-8
-Name=Xsession
-Exec=/etc/X11/Xsession
-Comment=Xsession will load the user's ~/.xsession file
