@@ -1,1 +1,0 @@
-../../Cellar/docker-machine/0.16.2-gitlab.25/etc/bash_completion.d/docker-machine-wrapper.bash

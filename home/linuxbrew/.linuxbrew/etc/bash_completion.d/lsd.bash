@@ -1,1 +1,0 @@
-../../Cellar/lsd/1.1.2/etc/bash_completion.d/lsd.bash

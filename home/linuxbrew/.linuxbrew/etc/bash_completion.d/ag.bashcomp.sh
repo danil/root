@@ -1,1 +1,0 @@
-../../Cellar/the_silver_searcher/2.2.0/etc/bash_completion.d/ag.bashcomp.sh

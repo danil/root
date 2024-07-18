@@ -1,1 +1,0 @@
-../../Cellar/ninja/1.11.1/etc/bash_completion.d/ninja-completion.sh
