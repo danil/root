@@ -26,13 +26,19 @@
 
 # shellcheck source=./misc/scripts/version-constraints.sh
 source "${SCRIPTDIR}/scripts/version-constraints.sh" || {
-    fancy_message error "Could not find version-constraints"
+    fancy_message error $"Could not find version-constraints"
     { ignore_stack=true; return 1; }
 }
 
 # shellcheck source=./misc/scripts/srcinfo.sh
 source "${SCRIPTDIR}/scripts/srcinfo.sh" || {
-    fancy_message error "Could not find srcinfo.sh"
+    fancy_message error $"Could not find srcinfo.sh"
+    { ignore_stack=true; return 1; }
+}
+
+# shellcheck source=./misc/scripts/manage-repo.sh
+source "${SCRIPTDIR}/scripts/manage-repo.sh" || {
+    fancy_message error $"Could not find manage-repo.sh"
     { ignore_stack=true; return 1; }
 }
 
@@ -50,6 +56,29 @@ function clean_builddir() {
     sudo rm -f "${STAGEDIR:?}/${pacname}.deb"
 }
 
+function check_gen_dep() {
+    { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
+    local onlyname="${1}" onlyarch="${2}" onlyreal="${3}" onlywhere="${4}"
+    if [[ ${onlyname} == *":${onlyarch}" ]]; then
+        if [[ -z "$(aptitude search --quiet --disable-columns "?exact-name(${onlyname%:*})?architecture(${onlyarch})" -F "%p")" \
+            && -z "$(aptitude search --quiet --disable-columns "?exact-name(${onlyname%:*})?architecture(all)" -F "%p")" \
+            && -z "$(aptitude search --quiet --disable-columns "?provides(^${onlyname%:*}$)?architecture(${onlyarch})" -F "%p")" \
+            && -z "$(aptitude search --quiet --disable-columns "?provides(^${onlyname%:*}$)?architecture(all)" -F "%p")" ]]; then
+            echo "${onlyreal}" >> "${onlywhere}"
+            return 1
+        fi
+    else
+        if [[ -z "$(apt-cache search --no-generate --names-only "^${onlyname}\$" 2> /dev/null || apt-cache search --names-only "^${onlyname}\$")" \
+            && -z "$(aptitude search --quiet --disable-columns "?exact-name(${onlyname})?architecture(${onlyarch})" -F "%p")" \
+            && -z "$(aptitude search --quiet --disable-columns "?exact-name(${onlyname})?architecture(all)" -F "%p")" \
+            && -z "$(aptitude search --quiet --disable-columns "?provides(^${onlyname}$)?architecture(${onlyarch})" -F "%p")" \
+            && -z "$(aptitude search --quiet --disable-columns "?provides(^${onlyname}$)?architecture(all)" -F "%p")" ]]; then
+            echo "${onlyreal}" >> "${onlywhere}"
+            return 1
+        fi
+    fi
+}
+
 function check_apt_dep() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     local dep="${1}" just_name just_arch real_dep
@@ -62,33 +91,22 @@ function check_apt_dep() {
     dep_const.split_name_and_version "${dep}" just_name
     just_arch="$(dep_const.get_arch "${just_name[0]}")"
     # Check if package exists in the repos, and if not, go to the next program
-    if [[ ${just_name[0]} == *":${just_arch}" ]]; then
-        if [[ -z "$(aptitude search --quiet --disable-columns "?exact-name(${just_name[0]%:*})?architecture(${just_arch})" -F "%p")" ]]; then
-            if [[ -z "$(aptitude search --quiet --disable-columns "?provides(^${just_name[0]%:*}$)?architecture(${just_arch})" -F "%p")" ]]; then
-                echo "${real_dep}" >> "${PACDIR}-missing-deps-${pacname}"
-                fancy_message sub "${BLUE}${real_dep}${NC} ${RED}✗${NC} [required]"
-                return 0
-            fi
-        fi
-    else
-        if [[ -z "$(apt-cache search --no-generate --names-only "^${just_name[0]}\$" 2> /dev/null || apt-cache search --names-only "^${just_name[0]}\$")" ]]; then
-            if [[ -z "$(aptitude search --quiet --disable-columns "?exact-name(${just_name[0]})?architecture(${just_arch})" -F "%p")" ]]; then
-                if [[ -z "$(aptitude search --quiet --disable-columns "?provides(^${just_name[0]}$)?architecture(${just_arch})" -F "%p")" ]]; then
-                    echo "${real_dep}" >> "${PACDIR}-missing-deps-${pacname}"
-                    fancy_message sub "${BLUE}${real_dep}${NC} ${RED}✗${NC} [required]"
-                    return 0
-                fi
-            fi
-        fi
+    if ! check_gen_dep "${just_name[0]}" "${just_arch}" "${real_dep}" "${PACDIR}-missing-deps-${pacname}"; then
+        fancy_message sub $"%b [required]" "${BLUE}${real_dep}${NC} ${RED}✗${NC}"
+        return 0
     fi
     # Next let's check if the version (if available) is in the repos
-    dep_const.apt_compare_to_constraints "${dep}" || { echo "${real_dep}" >> "${PACDIR}-not-satisfied-deps-${pacname}"; return 0; }
+    if ! dep_const.apt_compare_to_constraints "${dep}"; then
+        fancy_message sub $"%b [required]" "${BLUE}${real_dep}${NC} ${RED}✗${NC}"
+        echo "${real_dep}" >> "${PACDIR}-not-satisfied-deps-${pacname}"
+        return 0
+    fi
     # Add to the dependency list if already installed so it doesn't get autoremoved on upgrade
     echo "${real_dep}" >> "${PACDIR}-deps-${pacname}"
     if ! is_apt_package_installed "${just_name[0]}"; then
-        fancy_message sub "${BLUE}${just_name[0]} ${GREEN}↑${YELLOW}↓${NC} [remote]"
+        fancy_message sub $"%b [remote]" "${BLUE}${just_name[0]} ${GREEN}↑${YELLOW}↓${NC}"
     else
-        fancy_message sub "${BLUE}${just_name[0]} ${GREEN}✓${NC} [installed]"
+        fancy_message sub $"%b [installed]" "${BLUE}${just_name[0]} ${GREEN}✓${NC}"
     fi
 }
 
@@ -111,26 +129,14 @@ function check_opt_dep() {
     dep_const.split_name_and_version "${opt}" just_name
     just_arch="$(dep_const.get_arch "${just_name[0]}")"
     # Check if package exists in the repos, and if not, go to the next program
-    if [[ ${just_name[0]} == *":${just_arch}" ]]; then
-        if [[ -z "$(aptitude search --quiet --disable-columns "?exact-name(${just_name[0]%:*})?architecture(${just_arch})" -F "%p")" ]]; then
-            if [[ -z "$(aptitude search --quiet --disable-columns "?provides(^${just_name[0]%:*}$)?architecture(${just_arch})" -F "%p")" ]]; then
-                echo "${realopt}" >> "${PACDIR}-missing-optdeps-${pacname}"
-                return 0
-            fi
-        fi
-    else
-        if [[ -z "$(apt-cache search --no-generate --names-only "^${just_name[0]}\$" 2> /dev/null || apt-cache search --names-only "^${just_name[0]}\$")" ]]; then
-            if [[ -z "$(aptitude search --quiet --disable-columns "?exact-name(${just_name[0]})?architecture(${just_arch})" -F "%p")" ]]; then
-                if [[ -z "$(aptitude search --quiet --disable-columns "?provides(^${just_name[0]}$)?architecture(${just_arch})" -F "%p")" ]]; then
-                    echo "${realopt}" >> "${PACDIR}-missing-optdeps-${pacname}"
-                    return 0
-                fi
-            fi
-        fi
+    if ! check_gen_dep "${just_name[0]}" "${just_arch}" "${realopt}" "${PACDIR}-missing-optdeps-${pacname}"; then
+        return 0
     fi
     # Next let's check if the version (if available) is in the repos
-    dep_const.apt_compare_to_constraints "${opt}" || { echo "${realopt}" >> "${PACDIR}-not-satisfied-optdeps-${pacname}"; return 0; }
-
+    if ! dep_const.apt_compare_to_constraints "${opt}"; then
+        echo "${realopt}" >> "${PACDIR}-not-satisfied-optdeps-${pacname}"
+        return 0
+    fi
     # Add to the dependency list if already installed so it doesn't get autoremoved on upgrade
     # If the package is not installed already, add it to the list. It's much easier for a user to choose from a list of uninstalled packages than every single one regardless of it's status
     if ! is_apt_package_installed "${just_name[0]}"; then
@@ -140,10 +146,94 @@ function check_opt_dep() {
     fi
 }
 
+function prompt_aptdepends() {
+    { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
+    # So basically, we're gonna now check if the `depends` elements can be installed on this system based on the
+    # version constraints (if available), because I'd be very pissed if I tried building wine only to figure out
+    # 8 hours later the versions specified in `depends` aren't available.
+    if [[ -n ${missing_deps[*]} ]]; then
+        echo -ne "\t"
+        fancy_message error $"%b does not exist in apt repositories" "${BLUE}$(printf "${BLUE}%s${NC}, " "${missing_deps[@]}" | sed 's/, $/\n/')${NC}"
+    fi
+    if [[ -n ${not_satisfied_deps[*]} ]]; then
+        echo -ne "\t"
+        fancy_message error $"%b version(s) cannot be satisfied" "${BLUE}$(printf "${BLUE}%s${NC}, " "${not_satisfied_deps[@]}" | sed 's/, $/\n/')${NC}"
+    fi
+    if [[ -n ${missing_deps[*]} || -n ${not_satisfied_deps[*]} ]]; then
+        fancy_message info $"Cleaning up"
+        cleanup
+        exit 1
+    fi
+}
+
 function prompt_optdepends() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
-    local d o deps missing_optdeps not_satisfied_optdeps missing_deps not_satisfied_deps
-    fancy_message info "Checking apt dependencies"
+    if [[ -n ${missing_optdeps[*]} || -n ${not_satisfied_optdeps[*]} ]] || ((${#suggested_optdeps[@]} != 0)); then
+        fancy_message info $"Optional dependencies"
+    fi
+    if [[ -n ${missing_optdeps[*]} ]]; then
+        echo -ne "\t"
+        fancy_message warn $"%b does not exist in apt repositories" "${BLUE}$(printf "${BLUE}%s${NC}, " "${missing_optdeps[@]}" | sed 's/, $/\n/')${NC}"
+    fi
+    if [[ -n ${not_satisfied_optdeps[*]} ]]; then
+        echo -ne "\t"
+        fancy_message warn $"%b version(s) cannot be satisfied" "${BLUE}$(printf "${BLUE}%s${NC}, " "${not_satisfied_optdeps[@]}" | sed 's/, $/\n/')${NC}"
+    fi
+    if ((${#suggested_optdeps[@]} != 0)); then
+        if ((PACSTALL_INSTALL != 0)); then
+            # We do this so that arrays 'start at' 1 to the user
+            z=1
+            echo -e "\t\t[${BIRed}0${NC}] Select none"
+            for i in "${suggested_optdeps[@]}"; do
+                # print optdepends with bold package name
+                echo -e "\t\t[${BICyan}$z${NC}] ${BOLD}${i%%:\ *}${NC}: ${i#*:\ }"
+                { ignore_stack=true; ((z++)); }
+            done
+            unset z
+            # tab over the next line
+            echo -ne "\t"
+            select_options "Select optional dependencies to install" "${#suggested_optdeps[@]}" "optdeps"
+            read -ra choices < "${PACDIR}-selectopts-optdeps-${pacname}"
+            local choice_inc=0
+            for i in "${choices[@]}"; do
+                # have we gone over the maximum number in choices[@]?
+                if [[ $i != "n" && $i != "y" ]] && ((i > ${#suggested_optdeps[@]})); then
+                    local skip_opt+=("$i")
+                    unset 'choices[$choice_inc]'
+                fi
+                { ignore_stack=true; ((choice_inc++)); }
+            done
+            if [[ -n ${skip_opt[*]} ]]; then
+                fancy_message warn $"%b has exceeded the maximum number of optional dependencies. Skipping" "${BGreen}${skip_opt[*]}${NC}"
+            fi
+
+            # Did we get actual answers?
+            if [[ ${choices[0]} != "n" && ${choices[0]} != "0" ]]; then
+                for i in "${choices[@]}"; do
+                    # Set our user array that started at 1 down to 0 based
+                    not_installed_yet_optdeps+=("${suggested_optdeps[$((i - 1))]}")
+                done
+                if [[ -n ${not_installed_yet_optdeps[*]} ]]; then
+                    fancy_message info $"Selecting packages %b" "${BCyan}${not_installed_yet_optdeps[*]%%:\ *}${NC}"
+                fi
+            fi
+        fi
+    fi
+}
+
+function deblog_depends() {
+    { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
+    # shellcheck disable=SC2034
+    local log_depends log_depends_str input_depends="${1}" todeblog="${2}"
+    dep_const.format_control "${input_depends}" log_depends
+    dep_const.comma_array log_depends log_depends_str
+    deblog "${todeblog}" "${log_depends_str}"
+}
+
+function prompt_depends() {
+    { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
+    local d o deps missing_optdeps not_satisfied_optdeps missing_deps not_satisfied_deps suggested_optdeps not_installed_yet_optdeps already_installed_optdeps
+    fancy_message info $"Checking apt dependencies"
     for i in "deps" "missing_deps" "not_satisfied_deps" "suggested_optdeps" "missing_optdeps" "not_satisfied_optdeps" "already_installed_optdeps"; do
         sudo rm -rf "${PACDIR}-${i//_/-}-${pacname}"
         touch "${PACDIR}-${i//_/-}-${pacname}"
@@ -158,21 +248,8 @@ function prompt_optdepends() {
             rm -rf "${PACDIR}-${i//_/-}-${pacname}"
         fi
     done
-    if [[ -n ${missing_deps[*]} ]]; then
-        echo -ne "\t"
-        fancy_message error "${BLUE}$(printf "${BLUE}%s${NC}, " "${missing_deps[@]}" | sed 's/, $/\n/')${NC} does not exist in apt repositories"
-    fi
-    if [[ -n ${not_satisfied_deps[*]} ]]; then
-        echo -ne "\t"
-        fancy_message error "${BLUE}$(printf "${BLUE}%s${NC}, " "${not_satisfied_deps[@]}" | sed 's/, $/\n/')${NC} version(s) cannot be satisfied"
-    fi
-    if [[ -n ${missing_deps[*]} || -n ${not_satisfied_deps[*]} ]]; then
-        fancy_message info "Cleaning up"
-        cleanup
-        exit 1
-    fi
+    prompt_aptdepends
     if ((${#optdepends[@]} != 0)); then
-        local suggested_optdeps=()
         for o in "${optdepends[@]}"; do
             check_opt_dep "${o}" &
         done
@@ -183,90 +260,11 @@ function prompt_optdepends() {
                 rm -rf "${PACDIR}-${i//_/-}-${pacname}"
             fi
         done
-        if [[ -n ${missing_optdeps[*]} || -n ${not_satisfied_optdeps[*]} ]] || ((${#suggested_optdeps[@]} != 0)); then
-            fancy_message info "Optional dependencies"
-        fi
-        if [[ -n ${missing_optdeps[*]} ]]; then
-            echo -ne "\t"
-            fancy_message warn "${BLUE}$(printf "${BLUE}%s${NC}, " "${missing_optdeps[@]}" | sed 's/, $/\n/')${NC} does not exist in apt repositories"
-        fi
-        if [[ -n ${not_satisfied_optdeps[*]} ]]; then
-            echo -ne "\t"
-            fancy_message warn "${BLUE}$(printf "${BLUE}%s${NC}, " "${not_satisfied_optdeps[@]}" | sed 's/, $/\n/')${NC} version(s) cannot be satisfied"
-        fi
-        if ((${#suggested_optdeps[@]} != 0)); then
-            if ((PACSTALL_INSTALL != 0)); then
-                # We do this so that arrays 'start at' 1 to the user
-                z=1
-                echo -e "\t\t[${BIRed}0${NC}] Select none"
-                for i in "${suggested_optdeps[@]}"; do
-                    # print optdepends with bold package name
-                    echo -e "\t\t[${BICyan}$z${NC}] ${BOLD}${i%%:\ *}${NC}: ${i#*:\ }"
-                    { ignore_stack=true; ((z++)); }
-                done
-                unset z
-                # tab over the next line
-                echo -ne "\t"
-                select_options "Select optional dependencies to install" "${#suggested_optdeps[@]}" "optdeps"
-                read -ra choices < "${PACDIR}-selectopts-optdeps-${pacname}"
-                local choice_inc=0
-                for i in "${choices[@]}"; do
-                    # have we gone over the maximum number in choices[@]?
-                    if [[ $i != "n" && $i != "y" ]] && ((i > ${#suggested_optdeps[@]})); then
-                        local skip_opt+=("$i")
-                        unset 'choices[$choice_inc]'
-                    fi
-                    { ignore_stack=true; ((choice_inc++)); }
-                done
-                if [[ -n ${skip_opt[*]} ]]; then
-                    fancy_message warn "${BGreen}${skip_opt[*]}${NC} has exceeded the maximum number of optional dependencies. Skipping"
-                fi
-
-                # Did we get actual answers?
-                if [[ ${choices[0]} != "n" && ${choices[0]} != "0" ]]; then
-                    for i in "${choices[@]}"; do
-                        # Set our user array that started at 1 down to 0 based
-                        local not_installed_yet_optdeps+=("${suggested_optdeps[$((i - 1))]}")
-                    done
-                    if [[ -n ${not_installed_yet_optdeps[*]} ]]; then
-                        fancy_message info "Selecting packages ${BCyan}${not_installed_yet_optdeps[*]%%:\ *}${NC}"
-                        local log_depends log_depends_str
-                        dep_const.format_control optdepends log_depends
-                        dep_const.comma_array log_depends log_depends_str
-                        deblog "Suggests" "${log_depends_str}"
-                        fancy_message info "Installing selected optional dependencies"
-                    fi
-                else # Did we get 0 or n?
-                    # Add everything to Suggests
-                    local log_depends log_depends_str
-                    dep_const.format_control optdepends log_depends
-                    dep_const.comma_array log_depends log_depends_str
-                    deblog "Suggests" "${log_depends_str}"
-                fi
-            else # If `-B` is being used
-                # We can log everything from optdepends to Suggests
-                # shellcheck disable=SC2034
-                local log_depends log_depends_str
-                dep_const.format_control optdepends log_depends
-                dep_const.comma_array log_depends log_depends_str
-                deblog "Suggests" "${log_depends_str}"
-            fi
-        fi
+        prompt_optdepends
     fi
-
-    # shellcheck disable=SC2034
-    local depends_for_logging out_str
     if [[ -n ${pacdeps[*]} ]]; then
         for i in "${pacdeps[@]}"; do
-            (
-                #shellcheck disable=SC1090
-                source "$METADIR/$i"
-                if [[ -n $_gives ]]; then
-                    echo "$_gives" | tee -a "${PACDIR}-gives-${pacname}" > /dev/null
-                else
-                    echo "$_name" | tee -a "${PACDIR}-gives-${pacname}" > /dev/null
-                fi
-            )
+            awk -F'=' '/^_gives=/{gives=$2} /^_name=/{name=$2} END{val=(gives ? gives : name); gsub(/"/, "", val); print val}' "${METADIR}/${i}" >> "${PACDIR}-gives-${pacname}"
         done
         # shellcheck disable=SC2031
         while IFS= read -r line; do
@@ -278,29 +276,8 @@ function prompt_optdepends() {
     # Do we have any deps or optdeps scheduled for installation?
     if [[ -n ${deps[*]} || -n ${not_installed_yet_optdeps[*]} || -n ${already_installed_optdeps[*]} ]]; then
         # shellcheck disable=SC2034
-        local all_deps_to_install=("${not_installed_yet_optdeps[@]}" "${already_installed_optdeps[@]}" "${deps[@]}") ze_dep ze_dep_splits ze_dep_split
-        # So basically, we're gonna now check if the `depends` elements can be installed on this system based on the
-        # version constraints (if available), because I'd be very pissed if I tried building wine only to figure out
-        # 8 hours later the versions specified in `depends` aren't available.
-        for ze_dep in "${deps[@]}"; do
-            dep_const.pipe_split "${ze_dep}" ze_dep_splits
-            local pipe_nomatch=0
-            for ze_dep_split in "${ze_dep_splits[@]}"; do
-                if ! dep_const.apt_compare_to_constraints "${ze_dep_split}"; then
-                    { ignore_stack=true; ((pipe_nomatch++)); }
-                fi
-            done
-            if ((pipe_nomatch == ${#ze_dep_splits[@]})); then
-                fancy_message error "'${BBlue}${ze_dep}${NC}' version(s) cannot be satisfied"
-                fancy_message info "Cleaning up"
-                cleanup
-                exit 1
-            fi
-        done
-
-        dep_const.format_control all_deps_to_install depends_for_logging
-        dep_const.comma_array depends_for_logging out_str
-        deblog "Depends" "${out_str}"
+        local all_deps_to_install=("${not_installed_yet_optdeps[@]}" "${already_installed_optdeps[@]}" "${deps[@]}")
+        deblog_depends all_deps_to_install "Depends"
     fi
     for i in "gives" "deps" "missing-deps" "not-satisfied-deps" "suggested-optdeps" "missing-optdeps" "not-satisfied-optdeps" "already-installed-optdeps"; do
         sudo rm -rf "${PACDIR}-${i}-${pacname}"
@@ -347,7 +324,7 @@ function createdeb() {
             local files_for_control+=("$i")
         fi
     done
-    fancy_message sub "Packing control.tar"
+    fancy_message sub $"Packing control.tar"
     sudo tar -rf "$CONTROL_LOCATION" "${files_for_control[@]}"
     popd > /dev/null || { ignore_stack=true; return 1; }
     sudo tar -cf "$PWD/data.tar" -T /dev/null
@@ -357,10 +334,10 @@ function createdeb() {
         [[ $i =~ ^(DEBIAN|control.tar|data.tar|debian-binary)$ ]] && continue
         local files_for_data+=("$i")
     done
-    fancy_message sub "Packing data.tar"
+    fancy_message sub $"Packing data.tar"
     sudo tar -rf "$DATA_LOCATION" "${files_for_data[@]}"
 
-    fancy_message sub "Compressing"
+    fancy_message sub $"Compressing"
     sudo "$command" "${flags[@]}" "$DATA_LOCATION" "$CONTROL_LOCATION"
     sudo ar -rU "$debname.deb" debian-binary control.tar."$compression" data.tar."$compression" > /dev/null 2>&1
     sudo mv "$debname.deb" ..
@@ -381,43 +358,13 @@ function is_builddep_arch() {
     fi
 }
 
-# This function is used to undo a raw repo URL into its base components.
-# It is sort of flawed because for self-hosted instances, it might not catch the name that it needs
-# in order to parse, and if that eventually comes up, we'll deal with it then.
-function parse_repo_unraw() {
-    { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
-    local rep="${1}"
-    case "${rep}" in
-        *"githubusercontent"*)
-            pURL="${rep/'raw.githubusercontent.com'/'github.com'}"
-            pURL="${pURL%/*}"
-            export pURL pBRANCH="${rep##*/}" pISSUES="${pURL}/issues" branch="yes"
-            ;;
-        *"gitlab"*)
-            pURL="${rep%/-/raw/*}"
-            export pURL pBRANCH="${rep##*/-/raw/}" pISSUES="${pURL}/-/issues" branch="yes"
-            ;;
-        *"git.sr.ht"*)
-            pURL="${rep%/blob*}"
-            export pURL pBRANCH="${rep##*/}" pISSUES="https://lists.sr.ht/~${pURL#*~}" branch="yes"
-            ;;
-        *"codeberg"*)
-            pURL="${rep%raw/branch/*}"
-            export pURL pBRANCH="${rep##*/}" pISSUES="${pURL}/issues" branch="yes"
-            ;;
-        *)
-            export pURL="$rep" branch="no"
-            ;;
-    esac
-}
-
 function makedeb() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     # It looks weird for it to say: `Packaging foo as foo`
     if [[ -n $gives && $pacname != "$gives" ]]; then
-        fancy_message info "Packaging ${BGreen}$pacname${NC} as ${BBlue}$gives${NC}"
+        fancy_message info $"Packaging %b as %b" "${BGreen}$pacname${NC}" "${BBlue}$gives${NC}"
     else
-        fancy_message info "Packaging ${BGreen}$pacname${NC}"
+        fancy_message info $"Packaging %b" "${BGreen}$pacname${NC}"
     fi
     deblog "Package" "${gives:-$pacname}"
 
@@ -451,11 +398,12 @@ function makedeb() {
 
     if [[ -n ${bugs} ]]; then
         deblog "Bugs" "${bugs}"
-    else
-        parse_repo_unraw "$REPO"
+    elif [[ ${local} == "no" ]]; then
+        repo.unraw "$REPO"
         if [[ -n ${pISSUES} ]]; then
             deblog "Bugs" "${pISSUES}"
         fi
+        unset pURL pBRANCH pISSUES pTYPE pREPO pOWNER
     fi
 
     if [[ $pacname == *-git ]]; then
@@ -473,74 +421,60 @@ function makedeb() {
     fi
 
     if [[ -n ${makedepends[*]} ]]; then
-        # shellcheck disable=SC2034
-        local builddepends builddepends_str builddependsarch bdaform bdaform_str
+        local builddependsarch
         is_function "check" && [[ -n ${checkdepends[*]} ]] && makedepends+=("${checkdepends[@]}")
-        dep_const.format_control makedepends builddepends
-        dep_const.comma_array builddepends builddepends_str
-        # shellcheck disable=SC2001
-        deblog "Build-Depends" "${builddepends_str}"
+        deblog_depends makedepends "Build-Depends"
         if is_builddep_arch makedepends builddependsarch; then
             if is_function "check"; then
                 is_builddep_arch checkdepends builddependsarch \
                     || builddependsarch=("${builddependsarch[@]}")
             fi
-            dep_const.format_control builddependsarch bdaform
-            dep_const.comma_array bdaform bdaform_str
-            # shellcheck disable=SC2001
-            deblog "Build-Depends-Arch" "${bdaform_str}"
+            deblog_depends builddependsarch "Build-Depends-Arch"
         fi
     fi
 
     if [[ -n ${makeconflicts[*]} ]]; then
-        # shellcheck disable=SC2034
-        local buildconflicts buildconflicts_str buildconflictsarch bcaform bcaform_str
+        local buildconflictsarch
         is_function "check" && [[ -n ${checkconflicts[*]} ]] && makeconflicts+=("${checkconflicts[@]}")
-        dep_const.format_control makeconflicts buildconflicts
-        dep_const.comma_array buildconflicts buildconflicts_str
-        # shellcheck disable=SC2001
-        deblog "Build-Conflicts" "${buildconflicts_str}"
+        deblog_depends makeconflicts "Build-Conflicts"
         if is_builddep_arch makeconflicts buildconflictsarch; then
             if is_function "check"; then
                 is_builddep_arch checkconflicts buildconflictsarch \
                     || buildconflictsarch=("${buildconflictsarch[@]}")
             fi
-            dep_const.format_control buildconflictsarch bcaform
-            dep_const.comma_array bcaform bcaform_str
-            # shellcheck disable=SC2001
-            deblog "Build-Conflicts-Arch" "${bcaform_str}"
+            deblog_depends buildconflictsarch "Build-Conflicts-Arch"
         fi
     fi
 
     if ! array.contains provides "${gives:-${pacname}}"; then
         provides+=("${gives:-${pacname}}")
     fi
-    # shellcheck disable=SC2001
-    deblog "Provides" "$(sed 's/ /, /g' <<< "${provides[@]}")"
+    deblog_depends provides "Provides"
 
     if [[ -n ${conflicts[*]} ]]; then
-        # shellcheck disable=SC2001
-        deblog "Conflicts" "$(sed 's/ /, /g' <<< "${conflicts[@]}")"
+        deblog_depends conflicts "Conflicts"
     fi
 
     if [[ -n ${breaks[*]} ]]; then
-        # shellcheck disable=SC2001
-        deblog "Breaks" "$(sed 's/ /, /g' <<< "${breaks[@]}")"
+        deblog_depends breaks "Breaks"
     fi
 
     if [[ -n ${enhances[*]} ]]; then
-        # shellcheck disable=SC2001
-        deblog "Enhances" "$(sed 's/ /, /g' <<< "${enhances[@]}")"
+        deblog_depends enhances "Enhances"
     fi
 
     if [[ -n ${recommends[*]} ]]; then
-        # shellcheck disable=SC2001
-        deblog "Recommends" "$(sed 's/ /, /g' <<< "${recommends[@]}")"
+        deblog_depends recommends "Recommends"
+    fi
+
+    if [[ -n ${suggests[*]} || ${optdepends[*]} ]]; then
+        # shellcheck disable=SC2034
+        local all_suggests=("${suggests[@]}" "${optdepends[@]}")
+        deblog_depends all_suggests "Suggests"
     fi
 
     if [[ -n ${replaces[*]} ]]; then
-        # shellcheck disable=SC2001
-        deblog "Replaces" "$(sed 's/ /, /g' <<< "${replaces[@]}")"
+        deblog_depends replaces "Replaces"
     fi
 
     if [[ -n ${url} ]]; then
@@ -647,7 +581,7 @@ function makedeb() {
     unset pre_inst_upg post_inst_upg
     echo -e "sudo rm -f ${METADIR:?}/$pacname\nsudo rm -f /etc/apt/preferences.d/${pacname//./-}-pin" | sudo tee -a "$STAGEDIR/$pacname/DEBIAN/postrm" > /dev/null
     local postfile
-    for postfile in {postrm,postinst,preinst}; do
+    for postfile in {postrm,postinst,preinst,prerm}; do
         if [[ -f "$STAGEDIR/$pacname/DEBIAN/${postfile}" ]]; then
             sudo chmod -x "$STAGEDIR/$pacname/DEBIAN/${postfile}" &> /dev/null
             sudo chmod 755 "$STAGEDIR/$pacname/DEBIAN/${postfile}" &> /dev/null
@@ -659,25 +593,25 @@ function makedeb() {
         local file
         for file in "${backup[@]}"; do
             if [[ -z ${file} ]]; then
-                fancy_message warn "Empty key... Skipping" && continue
+                fancy_message warn $"Empty key... Skipping" && continue
             fi
             # `r:usr/share/pac.conf`
             if [[ ${file:0:2} == "r:" ]]; then
                 # `r:`
                 if [[ -z ${file:2} ]]; then
-                    fancy_message warn "'${file}' cannot contain empty path... Skipping" && continue
+                    fancy_message warn $"'%s' cannot contain empty path... Skipping" "${file}" && continue
                 fi
                 # `r:/usr/share/pac.conf`
                 if [[ ${file:2:1} == "/" ]]; then
-                    fancy_message warn "'${file}' cannot contain path starting with '/'... Skipping" && continue
+                    fancy_message warn $"'%s' cannot contain path starting with '/'... Skipping" "${file}" && continue
                 fi
                 if [[ -f "$STAGEDIR/$pacname/${file:2}" ]]; then
-                    fancy_message warn "'${file}' is inside the package... Skipping" && continue
+                    fancy_message warn $"'%s' is inside the package... Skipping" "${file}" && continue
                 fi
                 echo "remove-on-upgrade /${file:2}" | sudo tee -a "$STAGEDIR/$pacname/DEBIAN/conffiles" > /dev/null
             else
                 if [[ ${file:0:1} == "/" ]]; then
-                    fancy_message warn "'${file}' cannot contain path starting with '/'... Skipping" && continue
+                    fancy_message warn $"'%s' cannot contain path starting with '/'... Skipping" "${file}" && continue
                 fi
                 echo "/${file}" | sudo tee -a "$STAGEDIR/$pacname/DEBIAN/conffiles" > /dev/null
             fi
@@ -739,13 +673,22 @@ function install_deb() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     local debname="${1}_${2}_${3}"
     if ((PACSTALL_INSTALL != 0)); then
+        for pkg in "${replaces[@]}"; do
+            if is_apt_package_installed "${pkg}"; then
+                if [[ ${priority} == "essential" ]]; then
+                    sudo apt-get remove -y "${pkg}" --allow-remove-essential
+                else
+                    sudo apt-get remove -y "${pkg}"
+                fi
+            fi
+        done
         # --allow-downgrades is to allow git packages to "downgrade", because the commits aren't necessarily a higher number than the last version
         if ! sudo -E apt-get install --reinstall "$STAGEDIR/$debname.deb" -y --allow-downgrades 2> /dev/null; then
             echo -ne "\t"
-            fancy_message error "Failed to install $pacname deb"
+            fancy_message error $"Failed to install %s deb" "$pacname"
             error_log 8 "install $pacname"
             sudo dpkg -r --force-all "${gives:-$pacname}" 2> /dev/null
-            fancy_message info "Cleaning up"
+            fancy_message info $"Cleaning up"
             cleanup
             exit 1
         fi
@@ -766,9 +709,9 @@ function install_deb() {
     else
         sudo mv "$STAGEDIR/$debname.deb" "$PACDEB_DIR"
         sudo chown "$PACSTALL_USER":"$PACSTALL_USER" "$PACDEB_DIR/$debname.deb"
-        fancy_message info "Package built at ${BGreen}$PACDEB_DIR/$debname.deb${NC}"
+        fancy_message info $"Package built at %b" "${BGreen}$PACDEB_DIR/$debname.deb${NC}"
         if [[ $KEEP ]]; then
-            fancy_message info "Moving ${BGreen}$STAGEDIR/$pacname${NC} to ${BGreen}${PACDIR}-no-build/$pacname${NC}"
+            fancy_message info $"Moving %b to %b" "${BGreen}$STAGEDIR/$pacname${NC}" "${BGreen}${PACDIR}-no-build/$pacname${NC}"
             sudo rm -rf "${PACDIR}-no-build/${pacname:?}"
             mkdir -p "${PACDIR}-no-build/$pacname"
             sudo mv "$STAGEDIR/$pacname" "${PACDIR}-no-build/$pacname"
@@ -785,7 +728,7 @@ function repacstall() {
     upcontrol="${unpackdir}/DEBIAN/control"
     sudo mkdir -p "${unpackdir}"
     sudo rm -rf "${unpackdir:?}"/*
-    fancy_message sub "Repacking ${CYAN}${pacname/\-deb/}.deb${NC}"
+    fancy_message sub $"Repacking %b" "${CYAN}${pacname/\-deb/}.deb${NC}"
     sudo dpkg-deb -R "${input_dest}" "${unpackdir}"
     depends_line=$(awk '/^Depends:/ {print; exit}' "${upcontrol}")
     if [[ -n ${depends_line} ]]; then
@@ -893,7 +836,7 @@ function write_meta() {
     fi
     if [[ $local == 'no' ]]; then
         echo "_remoterepo=\"$pURL\""
-        if [[ $branch == 'yes' ]]; then
+        if [[ -n ${pBRANCH} ]]; then
             echo "_remotebranch=\"$pBRANCH\""
         fi
     fi
@@ -914,11 +857,12 @@ function meta_log() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     # Origin repo info parsing
     if [[ ${local} == "no" ]]; then
-        parse_repo_unraw "$REPO"
+        repo.unraw "$REPO"
     fi
 
     # Metadata writing
     write_meta | sudo tee "$METADIR/$pacname" > /dev/null
+    unset pURL pBRANCH pISSUES pTYPE pREPO pOWNER
 }
 
 # vim:set ft=sh ts=4 sw=4 et:

@@ -145,10 +145,10 @@ function srcinfo.write_details() {
 function srcinfo.vars() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     local _distros _vars _archs _sums distros \
-        vars="depends makedepends optdepends pacdeps checkdepends provides conflicts breaks replaces enhances recommends makeconflicts checkconflicts source" \
+        vars="depends makedepends optdepends pacdeps checkdepends provides conflicts breaks replaces enhances recommends suggests makeconflicts checkconflicts source" \
         sums="b2 sha512 sha384 sha256 sha224 sha1 md5"
     allvars=(pkgname gives pkgver pkgrel epoch pkgdesc url priority)
-    allars=(arch depends makedepends checkdepends optdepends pacdeps conflicts makeconflicts checkconflicts breaks replaces provides enhances recommends incompatible compatible backup mask noextract nosubmodules license maintainer repology custom_fields source)
+    allars=(arch depends makedepends checkdepends optdepends pacdeps conflicts makeconflicts checkconflicts breaks replaces provides enhances recommends suggests incompatible compatible backup mask noextract nosubmodules license maintainer repology custom_fields source)
     # shellcheck disable=SC2124
     distros="${PACSTALL_KNOWN_DISTROS[@]}"
     _distros="{${distros// /,}}" _vars="{${vars// /,}}" _sums="{${sums// /,}}"
@@ -160,7 +160,7 @@ function srcinfo.vars() {
 function srcinfo.write_global() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     # shellcheck disable=SC2034
-    local CARCH='CARCH_REPLACE' DISTRO="${DISTRO}" CDISTRO="${CDISTRO}" AARCH='AARCH_REPLACE' var ar aars bar ars rar rep seek
+    local CARCH='CARCH_REPLACE' DISTRO="${DISTRO}" CDISTRO="${CDISTRO}" AARCH='AARCH_REPLACE' var ar aars bar ars rar rep seek multilist
     local -A AARCHS_MAP=(
         ["amd64"]="x86_64"
         ["arm64"]="aarch64"
@@ -183,9 +183,14 @@ function srcinfo.write_global() {
         ["riscv64"]="riscv64"
         ["s390x"]="s390x"
     )
-    for ar in "${allars[@]}"; do
-        [[ ${ar} != "arch" ]] \
-            && local -n bar="${ar}"
+    multilist=("${multivalued_arch_attrs[@]}")
+    for i in "${multivalued_arch_attrs[@]}"; do
+        for j in {amd64,x86_64,arm64,aarch64,armel,arm,armhf,armv7h,i386,i686,mips64el,ppc64el,riscv64,s390x}; do
+          multilist+=("${i}_${j}")
+        done
+    done
+    for ar in "${multilist[@]}"; do
+        local -n bar="${ar}"
         if [[ -n ${bar[*]} ]]; then
             for ars in "${bar[@]}"; do
                 ars="${ars//+([[:space:]])/ }"
@@ -209,6 +214,7 @@ function srcinfo.write_global() {
                                 rep="${aars}"
                             fi
                         fi
+                        local -n fin="${ar}_${rep}"
                         # shellcheck disable=SC2076
                         if [[ " ${AARCHS_MAP[*]} " =~ " ${ar##*_} " || " ${!AARCHS_MAP[*]} " =~ " ${ar##*_} " || ${ar} == *"x86_64" ]]; then
                             : "${ar}=${ars}"
@@ -216,9 +222,14 @@ function srcinfo.write_global() {
                         else
                             : "${ar}_${aars}=${ars}"
                         fi
-                        eval "${_//${seek}/${rep}}"
+                        if [[ -z ${fin[*]} ]]; then
+                            eval "${_//${seek}/${rep}}"
+                        fi
                     done
-                    unset "${ar}"
+                    # shellcheck disable=SC2076
+                    if [[ " ${multivalued_arch_attrs[*]} " =~ " ${ar} " ]]; then
+                        unset "${ar}"
+                    fi
                 fi
             done
         fi
@@ -233,7 +244,7 @@ function srcinfo.write_package() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     local singlevalued=(gives pkgdesc url priority)
     local multivalued=(arch license depends checkdepends optdepends pacdeps
-        provides checkconflicts conflicts breaks replaces enhances recommends backup repology)
+        provides checkconflicts conflicts breaks replaces enhances recommends suggests backup repology)
     printf '%s = %s\n' 'pkgname' "$1"
     srcinfo.write_details "$1"
 }
@@ -302,6 +313,7 @@ function srcinfo._create_array() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     local pkgbase="${1}" var_name="${2}" var_pref="${3}"
     if [[ -n ${pkgbase} ]]; then
+        pkgbase="${pkgbase//./_}" var_name="${var_name//./_}"
         if ! [[ -v "${var_pref}_${pkgbase}_array_${var_name}" ]]; then
             declare -ag "${var_pref}_${pkgbase}_array_${var_name}"
         fi
@@ -331,7 +343,7 @@ function srcinfo._promote_to_variable() {
 
 function srcinfo.parse() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
-    local srcinfo_file var_prefix locbase temp_array ref total_list loop part i part_two split_up
+    local srcinfo_file var_prefix locbase temp_array ref total_list loop part i part_two split_up suffix
     srcinfo_file="${1:?No .SRCINFO passed to srcinfo.parse}"
     var_prefix="${2:?Variable prefix not passed to srcinfo.parse}"
     srcinfo.cleanup "${var_prefix}"
@@ -357,7 +369,7 @@ function srcinfo.parse() {
             # Do we have pkgbase first?
             if [[ ${temp_line[key]} == "pkgbase" ]]; then
                 locbase="pkgbase_${temp_line[value]//-/_}"
-                export globase="${temp_line[value]}"
+                export globase="${temp_line[value]//./_}"
             else
                 locbase="${temp_line[value]//-/_}"
                 export globase="temporary_pacstall_pkgbase"
@@ -385,10 +397,12 @@ function srcinfo.parse() {
             declare -n var_name="${var_prefix}_access"
             [[ ${loop} == "${var_prefix}_pkgbase"* ]] && global="pkgbase_"
             for i in "${!part[@]}"; do
+                suffix="${global}${part[${i}]//-/_}"
+                suffix="${suffix//./_}"
                 # Create our inner part
-                declare -ga "${var_prefix}_${global}${part[${i}]//-/_}"
+                declare -ga "${var_prefix}_${suffix}"
                 # Declare that relationship
-                var_name["${var_prefix}_${global}${part[${i}]//-/_}"]="${var_prefix}_${global}${part[${i}]//-/_}"
+                var_name["${var_prefix}_${suffix}"]="${var_prefix}_${suffix}"
             done
             unset global
         fi
@@ -455,6 +469,7 @@ function srcinfo.reformat_assoc_arr() {
     IFS='_' read -r -a pfs <<< "${in_name}"
     for pfx in "${!in_arr[@]}"; do
         base="${pfx%-*}" ida="${pfx##*-}" new="${base//-/_}"
+        new="${new//./_}"
         app+=("$(printf "%s[%s]=\"%s\"\n" "${pfs[0]}_${pfs[1]}_${new}" "${ida}" "${in_arr[${pfx}]}")")
     done
 }
@@ -479,6 +494,7 @@ function srcinfo.print_var() {
         return 0
     fi
     for var in "${bases[@]}"; do
+        var="${var//./_}"
         declare -n output="${var}_array_${found}"
         declare -n name="${var}_array_pkgname"
         if [[ -n ${output[*]} ]]; then
@@ -537,6 +553,7 @@ function srcinfo.print_var() {
 function srcinfo.match_pkg() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     local declares d bases b guy match out srcfile="${1}" search="${2}" pkg="${3}"
+    pkg="${pkg//./_}"
     if [[ ${pkg} == "pkgbase:"* || ${search} == "pkgbase" ]]; then
         pkg="${pkg/pkgbase:/}"
         match="srcinfo_${search%%_*}_${pkg//-/_}_pkgbase"

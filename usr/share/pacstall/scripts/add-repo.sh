@@ -24,30 +24,19 @@
 
 { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
 
-function parse_repo() {
+# shellcheck source=./misc/scripts/manage-repo.sh
+source "${SCRIPTDIR}/scripts/manage-repo.sh" || {
+    fancy_message error $"Could not find manage-repo.sh"
     # shellcheck disable=SC2034
-    { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
-    local ADDR
-    IFS=':' read -ra ADDR <<< "$1"
-    PROV="${ADDR[0]}"
-    USER=$(echo "${ADDR[1]}" | cut -d'/' -f1)
-    HEAD=$(echo "${ADDR[1]}" | cut -d'/' -f2 | cut -d'#' -f1)
-    if [[ ${ADDR[1]} =~ "#" ]]; then
-        BRANCH="$(echo "${ADDR[1]}" | cut -d'#' -f2)"
-    else
-        BRANCH="master"
-        fancy_message warn "Assuming that git branch is ${GREEN}master${NC}"
-    fi
+    { ignore_stack=true; return 1; }
 }
-
-REPO="${2%/}"
 
 case ${REPO} in
     *"github.com"*)
         REPO="${REPO/'github.com'/'raw.githubusercontent.com'}"
         if [[ $REPO != *"/tree/"* ]]; then
             REPO="$REPO/master"
-            fancy_message warn "Assuming that git branch is ${GREEN}master${NC}"
+            fancy_message warn $"Assuming that git branch is %b" "${GREEN}master${NC}"
         else
             REPO="${REPO/'/tree/'/'/'}"
         fi
@@ -55,18 +44,32 @@ case ${REPO} in
     *"gitlab.com"*)
         if [[ $REPO != *"/tree/"* ]]; then
             REPO="$REPO/-/raw/master"
-            fancy_message warn "Assuming that git branch is ${GREEN}master${NC}"
+            fancy_message warn $"Assuming that git branch is %b" "${GREEN}master${NC}"
         else
             REPO="${REPO/"/tree/"/"/raw/"}"
         fi
         ;;
-    *"github:"*)
-        parse_repo "${REPO}"
-        REPO="https://raw.${PROV}usercontent.com/${USER}/${HEAD}/${BRANCH}"
+    *"git.sr.ht"*)
+        if [[ $REPO != *"/tree/"* ]]; then
+            REPO="${REPO%/tree*}/blob/master"
+            fancy_message warn $"Assuming that git branch is %b" "${GREEN}master${NC}"
+        else
+            REPO="${REPO/"/tree/"/"/blob/"}"
+        fi
         ;;
-    *"gitlab:"*)
-        parse_repo "${REPO}"
-        REPO="https://${PROV}.com/${USER}/${HEAD}/-/raw/${BRANCH}"
+    *"codeberg.org"*)
+        if [[ $REPO != *"/src/branch/"* ]]; then
+            REPO="$REPO/raw/branch/master"
+            fancy_message warn $"Assuming that git branch is %b" "${GREEN}master${NC}"
+        else
+            REPO="${REPO/"/src/branch/"/"/raw/branch/"}"
+        fi
+        ;;
+    *"github:"*|*"gitlab:"*|*"sourcehut:"*|*"codeberg:"*)
+        if ! [[ "${REPO}" =~ "#" ]]; then
+            fancy_message warn $"Assuming that git branch is %b" "${GREEN}master${NC}"
+        fi
+        REPO="$(repo.from_metalink "${REPO}")"
         ;;
     *)
         [[ ${REPO} == "local:"* ]] && REPO="file://${REPO/local:/}"
@@ -80,33 +83,73 @@ esac
 
 case ${REPOCMD} in
     add)
-        ask "Do you want to add ${CYAN}${REPO}${NC} to the repo list?" Y
+        mapfile -t aliaslist < <(repo.get_all_type alias)
+        mapfile -t urllist < <(repo.get_all_type url)
+        if [[ -n ${ALIAS} ]]; then
+            if [[ ${ALIAS} == "none" ]]; then
+                fancy_message error $"Repository alias cannot be '%s'" "none"
+                exit 1
+            elif [[ ${ALIAS} =~ "://" ]]; then
+                fancy_message error $"Repository alias cannot be a hyperlink"
+                exit 1
+            elif [[ ${ALIAS} == "/"* || ${ALIAS} == "~"* || ${ALIAS} == "."* ]]; then
+                fancy_message error $"Repository alias cannot start with '%s', '%s', or '%s'" "/" "~" "."
+                exit 1
+            elif array.contains aliaslist "${ALIAS}"; then
+                fancy_message error $"The alias %b is already in use by %b" "$RED@$ALIAS$NC" "$CYAN$(repo.get_where alias "${ALIAS}")$NC"
+                exit 1
+            fi
+        fi
+        if array.contains urllist "${REPO}"; then
+            fancy_message warn $"%b is already in the repo list, doing nothing" "$CYAN$REPO$NC"
+            exit 0
+        fi
+        ask $"Do you want to add %b to the repo list?" "${CYAN}${REPO}${NC}${ALIAS:+ ${BLUE}@${ALIAS}${NC}}" Y
         if ((answer == 0)); then
             exit 3
         fi
         if ! curl --head --location -s --fail -- "$REPO/packagelist" > /dev/null; then
-            fancy_message warn "If the URL is a private repo, edit ${CYAN}\e]8;;file://$SCRIPTDIR/repo/pacstallrepo\a$SCRIPTDIR/repo/pacstallrepo\e]8;;\a${NC}"
-            fancy_message error "packagelist file not found"
+            fancy_message warn $"If the URL is a private repo, edit %b" "$CYAN\e]8;;file://$SCRIPTDIR/repo/pacstallrepo\a$SCRIPTDIR/repo/pacstallrepo\e]8;;\a${NC}"
+            fancy_message error $"packagelist file not found"
             exit 3
         fi
         REPOLIST=()
         while IFS= read -r REPOURL; do
             REPOLIST+=("${REPOURL}")
         done < "$SCRIPTDIR/repo/pacstallrepo"
-        REPOLIST+=("$REPO")
+        REPOLIST+=("${REPO}${ALIAS:+ @$ALIAS}")
         ;;
     remove)
-        ask "Do you want to remove ${CYAN}${REPO}${NC} from the repo list?" Y
+        if [[ ${REPO} == "@"* || -z ${ALIAS} ]]; then
+            # shellcheck disable=SC2034
+            mapfile -t aliaslist < <(repo.get_all_type alias)
+            mapfile -t urllist < <(repo.get_all_type url)
+            if array.contains aliaslist "${REPO#*@}"; then
+                ALIAS="${REPO#*@}"
+                REPO="$(repo.get_where alias "${ALIAS}")"
+            else
+                for i in "${!urllist[@]}"; do
+                    if [[ ${urllist[i]} == "${REPO}" ]]; then
+                        ALIAS="${aliaslist[i]}"
+                        if [[ ${ALIAS} == "none" ]]; then
+                            unset ALIAS
+                        fi
+                        break
+                    fi
+                done
+            fi
+        fi
+        ask $"Do you want to remove %b from the repo list?" "${CYAN}${REPO}${NC}${ALIAS:+ ${BLUE}@${ALIAS}${NC}}" Y
         if ((answer == 0)); then
             exit 3
         fi
         REPOLIST=()
         while IFS= read -r REPOURL; do
-            [[ ${REPOURL} != "$REPO" ]] && REPOLIST+=("${REPOURL}")
+            [[ ${REPOURL} != "${REPO}${ALIAS:+ @$ALIAS}" ]] && REPOLIST+=("${REPOURL}")
         done < "$SCRIPTDIR/repo/pacstallrepo"
         ;;
 esac
 
 printf "%s\n" "${REPOLIST[@]}" | sort -u | sudo tee "$SCRIPTDIR/repo/pacstallrepo" > /dev/null
-fancy_message info "The repo list has been updated"
+fancy_message info $"The repo list has been updated"
 # vim:set ft=sh ts=4 sw=4 et:

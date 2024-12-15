@@ -34,7 +34,9 @@ METADIR="/var/lib/pacstall/metadata"
 LOGDIR="/var/log/pacstall/error_log"
 SCRIPTDIR="/usr/share/pacstall"
 PACDIR="/tmp/pacstall"
-MANDIR="/usr/share/man/man8"
+MAN8DIR="/usr/share/man/man8"
+MAN5DIR="/usr/share/man/man5"
+PODIR="${SCRIPTDIR}/po"
 BASH_COMPLETION_DIR="/usr/share/bash-completion/completions"
 FISH_COMPLETION_DIR="/usr/share/fish/vendor_completions.d"
 PACSTALL_USER=$(logname 2> /dev/null || echo "${SUDO_USER:-${USER:-$(whoami)}}")
@@ -42,33 +44,39 @@ PACSTALL_USER=$(logname 2> /dev/null || echo "${SUDO_USER:-${USER:-$(whoami)}}")
 pacstall_deps=(
     "sudo" "wget" "build-essential" "unzip" "git"
     "zstd" "iputils-ping" "aptitude" "bubblewrap"
-    "jq" "distro-info-data" "spdx-licenses"
+    "jq" "distro-info-data" "spdx-licenses" "gettext"
 )
 
-function suggested_solution() {
-    if [[ -z $PACSTALL_SUPPRESS_SOLUTIONS ]]; then
-        local inputs=("${@}")
-        if ((${#inputs[@]} > 1)); then
-            local text="Suggested solutions are:"
-        else
-            local text="Suggested solution is:"
-        fi
-        echo -e "[${BOLD}${BPurple}⠿${NC}] ${text}"
-        for i in "${inputs[@]}"; do
-            echo -e "    ${BOLD}|${NC} $i"
-        done
-    fi
-}
+echo -e "[${BGreen}+${NC}] INFO: Updating..."
 
-for i in "${METADIR}" "${LOGDIR}" "${MANDIR}" "${BASH_COMPLETION_DIR}" "${FISH_COMPLETION_DIR}"; do
-    mkdir -p "${i}"
+if [[ -n $GIT_USER ]]; then
+    REPO="file://$PWD"
+else
+    REPO="https://raw.githubusercontent.com/${USERNAME}/pacstall/${BRANCH}"
+    if ! curl -s --fail "${REPO}/pacstall" > /dev/null; then
+        fancy_message error $"Invalid URL"
+        suggested_solution $"Confirm that '%b' is valid" "${UCyan}${REPO}/pacstall${NC}"
+        exit 1
+    fi
+fi
+
+fancy_message sub $"Fetching translation list"
+mapfile -t linguas < <(curl -fsSL "${REPO}/misc/po/LINGUAS")
+
+fancy_message sub $"Updating directories"
+for i in "${METADIR}" "${LOGDIR}" "${MAN8DIR}" "${MAN5DIR}" "${PODIR}" "${BASH_COMPLETION_DIR}" "${FISH_COMPLETION_DIR}"; do
+    sudo mkdir -p "${i}"
+done
+for lang in "${linguas[@]}"; do
+    sudo mkdir -p "/usr/share/locale/${lang}/LC_MESSAGES/"
 done
 
+fancy_message sub $"Checking dependencies"
 for pkg in "${pacstall_deps[@]}"; do
     if ! dpkg -s "${pkg}" > /dev/null 2>&1; then
         if [[ ${pkg} == "spdx-licenses" ]]; then
             if [[ -z $(apt-cache search --names-only "^${pkg}$") ]]; then
-                curl -s "http://ftp.debian.org/debian/pool/main/s/${pkg}/${pkg}_3.8+dfsg-3_all.deb" -o "/tmp/${pkg}.deb" && \
+                sudo curl -s "http://ftp.debian.org/debian/pool/main/s/${pkg}/${pkg}_3.8+dfsg-3_all.deb" -o "/tmp/${pkg}.deb" && \
                     sudo apt install "/tmp/${pkg}.deb" -y && sudo rm -f "/tmp/${pkg}.deb" && continue
             fi
         fi
@@ -90,47 +98,47 @@ old_info=($(cat "$SCRIPTDIR/repo/update" 2> /dev/null || echo pacstall master))
 old_username="${old_info[0]}"
 old_branch="${old_info[1]}"
 
-if [[ -n $GIT_USER ]]; then
-    REPO="file://$PWD"
-else
-    REPO="https://raw.githubusercontent.com/${USERNAME}/pacstall/${BRANCH}"
-    if ! curl -s --fail "${REPO}/pacstall" > /dev/null; then
-        fancy_message error "Invalid URL"
-        suggested_solution "Confirm that '${UCyan}${REPO}/pacstall${NC}' is valid"
-        exit 1
-    fi
-fi
+fancy_message sub $"Pulling scripts from GitHub"
 pacstall_scripts=(
     "error-log" "add-repo" "search" "dep-tree" "version-constraints"
     "checks" "get-pacscript" "package" "package-base" "fetch-sources"
     "build" "upgrade" "remove" "update" "query-info" "quality-assurance"
-    "bwrap" "srcinfo"
+    "bwrap" "srcinfo" "manage-repo"
 )
 for script in "${pacstall_scripts[@]}"; do
     sudo curl -s -o "$SCRIPTDIR/scripts/${script}.sh" "${REPO}/misc/scripts/${script}.sh" &
+done
+for lang in "${linguas[@]}"; do
+    sudo curl -s -o "${PODIR}/${lang}.po" "${REPO}/misc/po/${lang}.po" &
 done
 # Remove renamed files
 for i in {error_log,download,download-local,install-local,build-local}.sh; do
     sudo rm -f "${SCRIPTDIR:?}/scripts/$i"
 done
 sudo curl -s -o "/usr/bin/pacstall" "${REPO}/pacstall" &
-sudo curl -s -o "${MANDIR}/pacstall.8" "${REPO}/misc/pacstall.8" &
+sudo curl -s -o "${MAN8DIR}/pacstall.8" "${REPO}/misc/man/pacstall.8" &
+sudo curl -s -o "${MAN5DIR}/pacstall.5" "${REPO}/misc/man/pacstall.5" &
 sudo curl -s -o "${BASH_COMPLETION_DIR}/pacstall" "${REPO}/misc/completion/bash" &
 sudo curl -s -o "${FISH_COMPLETION_DIR}/pacstall.fish" "${REPO}/misc/completion/fish" &
 wait && stty "${tty_settings}"
 
+fancy_message sub $"Rebuilding translations"
+for lang in "${linguas[@]}"; do
+    sudo msgfmt -o "/usr/share/locale/${lang}/LC_MESSAGES/pacstall.mo" "${PODIR}/${lang}.po"
+done
+
+fancy_message sub $"Rebuilding manpages"
+sudo gzip --force -9n "${MAN8DIR}/pacstall.8"
+sudo gzip --force -9n "${MAN5DIR}/pacstall.5"
+
+fancy_message sub $"Making scripts executable"
 sudo chmod +x "/usr/bin/pacstall"
 sudo chmod +x "${SCRIPTDIR}/scripts/"*
-sudo gzip --force -9n "${MANDIR}/pacstall.8"
 
 if [[ -n $GIT_USER ]]; then
     echo "pacstall master" | sudo tee "${SCRIPTDIR}/repo/update" > /dev/null
 else
     echo "${USERNAME} ${BRANCH}" | sudo tee "${SCRIPTDIR}/repo/update" > /dev/null
-fi
-
-if [[ -f ${SCRIPTDIR}/repo/pacstallrepo.txt ]]; then
-    sudo mv "${SCRIPTDIR}/repo/pacstallrepo.txt" "${SCRIPTDIR}/repo/pacstallrepo"
 fi
 
 # shellcheck disable=SC2207
@@ -179,7 +187,6 @@ if [[ ${new_username} == "pacstall" ]]; then
     echo -e "\t${BCyan}GitHub${NC}: ${BOLD}https://github.com/pacstall${NC}"
     echo -e "\t${BRed}Report Bugs${NC}: ${BOLD}https://github.com/${new_username}/pacstall/issues${NC}"
     echo -e "\t${BBlue}Discord${NC}: ${BOLD}https://discord.gg/yzrjXJV6K8${NC}"
-    echo -e "\t${BGreen}Matrix${NC}: ${BOLD}https://matrix.to/#/#pacstall:matrix.org${NC}"
 fi
 exit 0
 

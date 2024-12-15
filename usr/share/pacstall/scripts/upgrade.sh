@@ -26,19 +26,25 @@
 
 # shellcheck source=./misc/scripts/dep-tree.sh
 source "${SCRIPTDIR}/scripts/dep-tree.sh" || {
-    fancy_message error "Could not load dep-tree.sh"
+    fancy_message error $"Could not load dep-tree.sh"
     { ignore_stack=true; return 1; }
 }
 
 # shellcheck source=./misc/scripts/fetch-sources.sh
 source "${SCRIPTDIR}/scripts/fetch-sources.sh" || {
-    fancy_message error "Could not find fetch-sources.sh"
+    fancy_message error $"Could not find fetch-sources.sh"
     { ignore_stack=true; return 1; }
 }
 
 # shellcheck source=./misc/scripts/srcinfo.sh
 source "${SCRIPTDIR}/scripts/srcinfo.sh" || {
-    fancy_message error "Could not find srcinfo.sh"
+    fancy_message error $"Could not find srcinfo.sh"
+    { ignore_stack=true; return 1; }
+}
+
+# shellcheck source=./misc/scripts/manage-repo.sh
+source "${SCRIPTDIR}/scripts/manage-repo.sh" || {
+    fancy_message error $"Could not find manage-repo.sh"
     { ignore_stack=true; return 1; }
 }
 
@@ -95,15 +101,15 @@ DISTRO="$(set_distro parent)"
 CDISTRO="$(set_distro)"
 export CARCH AARCH DISTRO CDISTRO
 
-fancy_message info "Checking for updates"
+fancy_message info $"Checking for updates"
 
 # Get the list of the installed packages
 mapfile -t list < <(pacstall -L)
 if ((${#list[@]} == 0)); then
-    fancy_message info "Nothing to upgrade"
+    fancy_message info $"Nothing to upgrade"
     return 0
 fi
-fancy_message sub "Building dependency tree"
+fancy_message sub $"Building dependency tree"
 tput civis # Hide cursor
 dep_tree.loop_traits update_order "${list[@]}"
 tput cnorm # Show cursor again
@@ -114,7 +120,7 @@ up_list="$(mktemp /tmp/XXXXXX-pacstall-up-list)"
 up_print="$(mktemp /tmp/XXXXXX-pacstall-up-print)"
 up_urls="$(mktemp /tmp/XXXXXX-pacstall-up-urls)"
 
-fancy_message sub "Checking versions"
+fancy_message sub $"Checking versions"
 
 tty_settings=$(stty -g)
 N="$(nproc)"
@@ -136,14 +142,18 @@ N="$(nproc)"
             # if localver does not end with the correct pacstall version format, append it
             [[ ! $localver =~ -pacstall[0-9]+$ && ! $localver =~ -pacstall[0-9]+~git[a-zA-Z0-9_-]{8}$ ]] && localver="${localver}-pacstall1"
 
-            if [[ ${_remoterepo} == *"github.com"* ]]; then
-                remoterepo="${_remoterepo/'github.com'/'raw.githubusercontent.com'}/${_remotebranch}"
-            elif [[ ${_remoterepo} == *"gitlab.com"* ]]; then
-                remoterepo="${_remoterepo}/-/raw/${_remotebranch}"
-            else
-                remoterepo="${_remoterepo}"
-            fi
-            remotebranch="${_remotebranch}"
+            case "${_remoterepo}" in
+                *"github.com"*)
+                    remoterepo="${_remoterepo/'github.com'/'raw.githubusercontent.com'}/${_remotebranch}" ;;
+                *"gitlab.com"*)
+                    remoterepo="${_remoterepo}/-/raw/${_remotebranch}" ;;
+                *"git.sr.ht"*)
+                    remoterepo="${_remoterepo}/blob/${_remotebranch}" ;;
+                *"codeberg"*)
+                    remoterepo="${_remoterepo}/raw/branch/${_remotebranch}" ;;
+                *)
+                    remoterepo="${_remoterepo}" ;;
+            esac
             unset _remoterepo
 
             # shellcheck source=./misc/scripts/search.sh
@@ -157,14 +167,17 @@ N="$(nproc)"
                 unset comp_repo_ver
                 remoteurl="${REPOS[$IDXMATCH]}"
             else
-                parsedrepo="$(parseRepo "${remoterepo}")"
-                if [[ -n ${remotebranch} ]]; then
-                    parsedrepo+="${YELLOW}#${remotebranch}${NC}"
+                parsedrepo="$(repo.parse "${remoterepo}")"
+                if [[ ${parsedrepo} =~ "#" ]]; then
+                    parsedrepo="${parsedrepo%%#*}${YELLOW}#${parsedrepo##*#}${NC}"
                 fi
-                [[ ${remoterepo} != "orphan" ]] && fancy_message warn "Package ${GREEN}${i}${NC} is not on ${CYAN}${parsedrepo}${NC} anymore" \
-                    && sudo sed -i 's/_remoterepo=".*"/_remoterepo="orphan"/g' "$METADIR/$i" && sudo sed -i '/_remotebranch=/d' "$METADIR/$i"
+                if [[ ${remoterepo} != "orphan" ]]; then
+                    fancy_message warn $"Package %b is not on %b anymore" "${GREEN}${i}${NC}" "${CYAN}${parsedrepo}${NC}"
+                    sudo sed -i 's/_remoterepo=".*"/_remoterepo="orphan"/g' "$METADIR/$i"
+                    sudo sed -i '/_remotebranch=/d' "$METADIR/$i"
+                fi
+                unset parsedrepo
             fi
-            unset remotebranch parsedrepo
 
             if [[ $remotever != "${localver}" ]]; then
                 alterver="0.0.0"
@@ -196,14 +209,6 @@ N="$(nproc)"
                 return
             fi
 
-            if [[ ${remoteurl} == *"github"* ]]; then
-                upBRANCH="${remoteurl##*/}"
-            elif [[ ${remoteurl} == *"gitlab"* ]]; then
-                upBRANCH="${remoteurl##*/-/raw/}"
-            else
-                unset upBRANCH
-            fi
-
             if [[ -n $remotever ]]; then
                 if ver_compare "$localver" "$remotever"; then
                     if [[ -n ${_pkgbase} ]]; then
@@ -211,14 +216,14 @@ N="$(nproc)"
                     else
                         echo "$i" | tee -a "${up_list}" > /dev/null
                     fi
-                    updaterepo="$(parseRepo "${remoteurl}")"
-                    if [[ -n ${upBRANCH} && ${upBRANCH} != "master" && ${upBRANCH} != "main" ]]; then
-                        updaterepo+="${YELLOW}#${upBRANCH}${NC}"
+                    updaterepo="$(repo.parse "${remoteurl}")"
+                    if [[ ${updaterepo} =~ "#" ]]; then
+                        updaterepo="${updaterepo%%#*}${YELLOW}#${updaterepo##*#}${NC}"
                     fi
-                    printf "\t%s%s%s @ %s%s ( %s%s%s -> %s%s%s )\n" \
-                        "${GREEN}" "${i}" "${CYAN}" "${updaterepo}" "${NC}" "${BLUE}" "${localver:-unknown}" "${NC}" "${BLUE}" "${remotever:-unknown}" "${NC}" | tee -a "${up_print}" > /dev/null
+                    printf "\t%s%s%s @ %s%s%s ( %s%s%s -> %s%s%s )\n" \
+                        "${GREEN}" "${i}" "${PURPLE}" "${CYAN}" "${updaterepo}" "${NC}" "${BLUE}" "${localver:-unknown}" "${NC}" "${BLUE}" "${remotever:-unknown}" "${NC}" | tee -a "${up_print}" > /dev/null
                     echo "$remoteurl" | tee -a "${up_urls}" > /dev/null
-                    unset upBRANCH updaterepo
+                    unset updaterepo
                 fi
             fi
         ) &
@@ -227,10 +232,10 @@ N="$(nproc)"
 )
 
 if [[ ! -s ${up_list} ]]; then
-    fancy_message info "Nothing to upgrade"
+    fancy_message info $"Nothing to upgrade"
 else
     echo
-    fancy_message info "Packages can be upgraded"
+    fancy_message info $"Packages can be upgraded"
     echo -e "Upgradable: $(wc -l < "${up_print}")
 ${BOLD}$(cat "${up_print}")${NC}\n"
 
@@ -249,12 +254,12 @@ ${BOLD}$(cat "${up_print}")${NC}\n"
     export local='no'
     if ! cd "$PACDIR" 2> /dev/null; then
         error_log 1 "upgrade"
-        fancy_message error "Could not enter ${PACDIR}"
+        fancy_message error $"Could not enter %s" "${PACDIR}"
         exit 1
     fi
     for to_upgrade in "${upgrade[@]}"; do
         PACKAGE="${to_upgrade}"
-        ask "Do you want to upgrade ${GREEN}${PACKAGE}${NC}?" Y
+        ask $"Do you want to upgrade %b?" "${GREEN}${PACKAGE}${NC}" Y
         if ((answer == 0)); then
             continue
         fi
@@ -268,7 +273,7 @@ ${BOLD}$(cat "${up_print}")${NC}\n"
         export URL="$REPO/packages/$PACKAGE/$PACKAGE.pacscript"
         # shellcheck source=./misc/scripts/get-pacscript.sh
         if ! source "$SCRIPTDIR/scripts/get-pacscript.sh"; then
-            fancy_message error "Failed to download the ${GREEN}${PACKAGE}${NC} pacscript"
+            fancy_message error $"Failed to download the %b pacscript" "${GREEN}${PACKAGE}${NC}"
             continue
         fi
         # shellcheck source=./misc/scripts/package-base.sh

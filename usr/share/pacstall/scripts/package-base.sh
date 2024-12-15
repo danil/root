@@ -26,19 +26,20 @@
 
 # shellcheck source=./misc/scripts/checks.sh
 source "${SCRIPTDIR}/scripts/checks.sh" || {
-    fancy_message error "Could not find checks.sh"
+    fancy_message error $"Could not find checks.sh"
     { ignore_stack=true; return 1; }
 }
 
 # shellcheck source=./misc/scripts/fetch-sources.sh
 source "${SCRIPTDIR}/scripts/fetch-sources.sh" || {
-    fancy_message error "Could not find fetch-sources.sh"
+    fancy_message error $"Could not find fetch-sources.sh"
     { ignore_stack=true; return 1; }
 }
 
 function trap_ctrlc() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
-    fancy_message warn "\nInterrupted, cleaning up"
+    echo -e "\n"
+    fancy_message warn $"Interrupted, cleaning up"
     # shellcheck disable=SC2031
     if is_apt_package_installed "${pacname}"; then
         # shellcheck disable=SC2031
@@ -55,7 +56,7 @@ function package_override() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     # shellcheck disable=SC2031
     local o all_ovars opac="${pacname}" obase="${pkgbase}" ovars=("gives" "pkgdesc" "url" "priority")
-    all_ovars=("${ovars[@]}" "arch" "license" "depends" "checkdepends" "optdepends" "pacdeps" "provides" "checkconflicts" "conflicts" "breaks" "replaces" "enhances" "recommends" "backup" "repology")
+    all_ovars=("${ovars[@]}" "arch" "license" "depends" "checkdepends" "optdepends" "pacdeps" "provides" "checkconflicts" "conflicts" "breaks" "replaces" "enhances" "recommends" "suggests" "backup" "repology")
     for o in "${all_ovars[@]}"; do
         local look lbase
         # shellcheck disable=SC2034
@@ -89,7 +90,7 @@ function package_pkg() {
     # shellcheck disable=SC2031
     if [[ -n ${pkgbase} ]]; then
         # shellcheck disable=SC2031
-        fancy_message info "Found pkgbase: ${PURPLE}${pkgbase}${NC}"
+        fancy_message info $"Found pkgbase: %b" "${PURPLE}${pkgbase}${NC}"
         if ((${#pkgname[@]} > 1)); then
             if [[ -z ${CHILD} || ${CHILD} == "pkgbase" ]]; then
                 # We do this so that arrays 'start at' 1 to the user
@@ -115,7 +116,7 @@ function package_pkg() {
                     { ignore_stack=true; ((choice_inc++)); }
                 done
                 if [[ -n ${skip_pkg[*]} ]]; then
-                    fancy_message warn "${BGreen}${skip_pkg[*]}${NC} has exceeded the maximum number of packages to build. Skipping"
+                    fancy_message warn $"%b has exceeded the maximum number of packages to build. Skipping" "${BGreen}${skip_pkg[*]}${NC}"
                 fi
             fi
             # Did we get actual answers?
@@ -125,7 +126,7 @@ function package_pkg() {
                     if array.contains pkgname "${CHILD}"; then
                         pacnames=("${CHILD}")
                     else
-                        fancy_message error "${PKGPATH:+${PKGPATH}/}${PACKAGE}${PKGPATH:+.pacscript}:${CHILD} does not exist"
+                        fancy_message error $"%s does not exist" "${PKGPATH:+${PKGPATH}/}${PACKAGE}${PKGPATH:+.pacscript}:${CHILD}"
                         cleanup
                         exit 1
                     fi
@@ -136,15 +137,15 @@ function package_pkg() {
                     done
                 fi
                 if [[ -n ${pacnames[*]} ]]; then
-                    fancy_message info "Selecting packages ${BCyan}${pacnames[*]%%:\ *}${NC}"
+                    fancy_message info $"Selecting packages %b" "${BCyan}${pacnames[*]%%:\ *}${NC}"
                     for pacname in "${pacnames[@]}"; do
                         package_override
                         # shellcheck disable=SC2031
-                        fancy_message info "Packaging ${GREEN}${pacname}${NC}"
+                        fancy_message info $"Packaging %b" "${GREEN}${pacname}${NC}"
                         # shellcheck source=./misc/scripts/package.sh
                         if ! source "$SCRIPTDIR/scripts/package.sh"; then
                             # shellcheck disable=SC2031
-                            fancy_message error "Failed to install ${GREEN}${pacname}${NC}"
+                            fancy_message error $"Failed to install %b" "${GREEN}${pacname}${NC}"
                             # shellcheck disable=SC2031
                             if ! [[ -f "${PACDIR}-pacdeps-${pacname}" ]]; then
                                 sudo rm -rf "${PACDIR:?}"
@@ -154,7 +155,7 @@ function package_pkg() {
                     done
                 fi
             fi
-            fancy_message info "Cleaning up"
+            fancy_message info $"Cleaning up"
             if is_apt_package_installed "${PACKAGE}-dummy-builddeps"; then
                 sudo apt-get purge "${PACKAGE}-dummy-builddeps" -y > /dev/null
             fi
@@ -166,14 +167,14 @@ function package_pkg() {
         # shellcheck source=./misc/scripts/package.sh
         if ! source "$SCRIPTDIR/scripts/package.sh"; then
             # shellcheck disable=SC2031
-            fancy_message error "Failed to install ${GREEN}${pacname}${NC}"
+            fancy_message error $"Failed to install %b" "${GREEN}${pacname}${NC}"
             # shellcheck disable=SC2031
             if ! [[ -f "${PACDIR}-pacdeps-${pacname}" ]]; then
                 sudo rm -rf "${PACDIR:?}"
             fi
             exit 1
         fi
-        fancy_message info "Cleaning up"
+        fancy_message info $"Cleaning up"
         if is_apt_package_installed "${PACKAGE}-dummy-builddeps"; then
             sudo apt-get purge "${PACKAGE}-dummy-builddeps" -y > /dev/null
         fi
@@ -188,7 +189,7 @@ if [[ -n $PACSTALL_BUILD_CORES ]]; then
         function nproc() { echo "${PACSTALL_BUILD_CORES:-1}"; }
         NCPU="${PACSTALL_BUILD_CORES:-1}"
     else
-        fancy_message error "${UCyan}PACSTALL_BUILD_CORES${NC} is not an integer. Falling back to 1"
+        fancy_message error $"%b is not an integer. Falling back to 1" "${UCyan}PACSTALL_BUILD_CORES${NC}"
         function nproc() { echo "1"; }
         NCPU="1"
     fi
@@ -197,7 +198,7 @@ else
 fi
 export NCPU
 
-ask "(${BPurple}$PACKAGE${NC}) Do you want to view/edit the pacscript?" N
+ask $"(%b) Do you want to view/edit the pacscript?" "${BPurple}$PACKAGE${NC}" N
 if ((answer == 1)); then
     (
         if [[ -n $PACSTALL_EDITOR ]]; then
@@ -210,12 +211,12 @@ if ((answer == 1)); then
             sensible-editor "$PACKAGE".pacscript
         fi
     ) || {
-        fancy_message warn "Editor not found, falling back to 'sensible-editor'"
+        fancy_message warn $"Editor not found, falling back to '%s'" "sensible-editor"
         sensible-editor "$PACKAGE".pacscript
     }
 fi
 
-fancy_message info "Sourcing pacscript"
+fancy_message info $"Sourcing pacscript"
 DIR="$PWD"
 homedir="$(eval echo ~"$PACSTALL_USER")"
 export homedir
@@ -238,7 +239,7 @@ export FARCH CARCH AARCH DISTRO CDISTRO
 # Running source on an isolated env
 safe_source "${pacfile}"
 if ! source "${safeenv}"; then
-    fancy_message error "Could not source pacscript"
+    fancy_message error $"Could not source pacscript"
     error_log 12 "install $PACKAGE"
     clean_fail_down
 fi
