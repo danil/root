@@ -1,0 +1,3 @@
+---
+pyroscopedb:
+  data_path: /home/linuxbrew/.linuxbrew/var/lib/pyroscope

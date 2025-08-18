@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: "prometheus"
+    static_configs:
+    - targets: ["localhost:9090"]
+
+  - job_name: "http-basket"
+    static_configs:
+    - targets: ['media-basket-http:8080']
+
+  - job_name: "http-cache"
+    static_configs:
+    - targets: ['media-basket-http-cache:2443']
