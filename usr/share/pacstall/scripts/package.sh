@@ -40,17 +40,10 @@ export TARCH
 # FARCH will be useful here when pkgbase is implemented
 append_modifier_entries "${TARCH}" "${DISTRO}"
 
-# Running `-B` on a deb package doesn't make sense, so let's download instead
-if ((PACSTALL_INSTALL == 0)) && [[ ${pacname} == *-deb ]]; then
-    parse_source_entry "${source[0]}"
-    if ! download "${source[0]}" "${dest}"; then
-        fancy_message error $"Failed to download '%s'" "${source[0]}"
-        { ignore_stack=true; return 1; }
-    else
-        fancy_message info $"Moving %b to %b" "${BGreen}${PACDIR}/${dest}${NC}" "${BGreen}${PACDEB_DIR}/${dest}${NC}"
-        sudo mv ./"${dest}" "${PACDEB_DIR}"
-    fi
-    return 0
+# Run pre-checks function
+if ! pre_checks; then
+    error_log 6 "install ${pacname}"
+    clean_fail_down
 fi
 
 masked_packages=()
@@ -79,12 +72,19 @@ fi
 if [[ -n ${compatible[*]} ]]; then
     if ! get_compatible_releases "${compatible[@]}"; then
         cleanup
-        [[ ${GITHUB_ACTIONS} == "true" ]] && exit 0 || exit 1
+        exit 1
     fi
 elif [[ -n ${incompatible[*]} ]]; then
     if ! get_incompatible_releases "${incompatible[@]}"; then
         cleanup
-        [[ ${GITHUB_ACTIONS} == "true" ]] && exit 0 || exit 1
+        exit 1
+    fi
+fi
+
+if [[ -n ${limit_kver} ]]; then
+    if ! compare_kernel "${limit_kver}"; then
+        cleanup
+        exit 1
     fi
 fi
 
@@ -96,6 +96,19 @@ sudo chmod a+rx "$STAGEDIR" "$STAGEDIR/$pacname" "$STAGEDIR/$pacname/DEBIAN"
 if ! checks; then
     error_log 6 "install ${pacname}"
     clean_fail_down
+fi
+
+# Running `-B` on a deb package doesn't make sense, so let's download instead
+if ((PACSTALL_INSTALL == 0)) && [[ ${pacname} == *-deb ]]; then
+    parse_source_entry "${source[0]}"
+    if ! download "${source[0]}" "${dest}"; then
+        fancy_message error $"Failed to download '%s'" "${source[0]}"
+        { ignore_stack=true; return 1; }
+    else
+        fancy_message info $"Moving %b to %b" "${BGreen}${PACDIR}/${dest}${NC}" "${BGreen}${PACDEB_DIR}/${dest}${NC}"
+        sudo mv ./"${dest}" "${PACDEB_DIR}"
+    fi
+    return 0
 fi
 
 # If priority exists and is required, and also that this package has not been installed before (first time)
@@ -116,6 +129,10 @@ if [[ ${pacname} == *-git ]]; then
     export git_pkgver
 else
     full_version="${epoch+$epoch:}${pkgver}-pacstall${pkgrel:-1}"
+fi
+
+if ((PACSTALL_INSTALL)) && is_package_installed "${pacname}" && [[ ${full_version} == "$(pacstall -Ci "${pacname}" pacversion)" ]]; then
+    fancy_message warn $"Reinstalling '%s'" "${pacname}"
 fi
 
 # Trap Crtl+C just before the point cleanup is first needed
@@ -191,6 +208,8 @@ fi
 if [[ -n ${pacdeps[*]} ]]; then
     fancy_message info $"Checking pacstall dependencies"
     for pdep in "${pacdeps[@]}"; do
+        unset precmd
+        ((PACSTALL_DEBUG)) && precmd="-x"
         # If "${PACDIR}-pacdeps-$i" is available, it will trigger the logger to log it as a dependency
         touch "${PACDIR}-pacdeps-$pdep"
         cmd="-I"
@@ -207,7 +226,7 @@ if [[ -n ${pacdeps[*]} ]]; then
             pacstall_pacdep_status="$(compare_remote_version "$pdep")"
             if [[ $pacstall_pacdep_status == "update" ]]; then
                 fancy_message sub $"%b [update]" "${PURPLE}${pdep}${NC} ${GREEN}↑${YELLOW}↓${NC}"
-                if ! pacstall "$cmd" "${pdep}${repo}"; then
+                if ! pacstall ${precmd} "$cmd" "${pdep}${repo}"; then
                     fancy_message error $"Failed to install dependency (%s from %s)" "${pdep}" "${PACKAGE}"
                     error_log 8 "install ${pacname}"
                     clean_fail_down
@@ -229,17 +248,19 @@ if [[ -n ${pacdeps[*]} ]]; then
 fi
 
 unset dest_list
-declare -A dest_list
 for i in "${!source[@]}"; do
     parse_source_entry "${source[$i]}"
     dest="${dest%.git}"
-    if [[ -n ${dest_list[$dest]} && ${dest_list[$dest]} != "${source_url}" ]]; then
+    if array.contains dest_list "${dest}"; then
         fancy_message error $"%s is associated with multiple source entries" "${dest}"
         clean_fail_down
     else
-        dest_list["${dest}"]="${source_url}"
+        dest_list+=("${dest}")
+        if [[ -n ${to_location} ]]; then
+            dest_list+=("${to_location}")
+        fi
     fi
-    genextr_declare
+    genextr_declare "${source_url,,}"
     unset ext_dep make_dep in_make_deps
     for ext_dep in "${ext_deps[@]}"; do
         in_make_deps=false
@@ -261,70 +282,83 @@ install_builddepends
 # shellcheck disable=SC2034
 prompt_depends || { ignore_stack=true; return 1; }
 
-fancy_message info $"Retrieving packages"
 mkdir -p "${PACDIR}"
 gather_down
 
-unset payload_arr
-if [[ -n $PACSTALL_PAYLOAD && ! -f "${PACDIR}-pacdeps-${pacname}" ]]; then
-    mapfile -t payload_arr < <(awk -v RS=';:' '{if (NF) print $0}' <<< "${PACSTALL_PAYLOAD}")
-fi
+if ! [[ -f "${PACDIR}-no-download-${pkgbase}" ]]; then
+    fancy_message info $"Retrieving packages"
 
-for i in "${!source[@]}"; do
-    parse_source_entry "${source[$i]}"
-    expectedHash="${hash[$i]}"
-    if [[ -n ${payload_arr[*]} ]]; then
-        for p in "${!payload_arr[@]}"; do
-            if [[ ${payload_arr[$p]##*/} == "${dest}" ]]; then
-                source_url="file://${payload_arr[$p]}"
-            fi
-        done
+    unset payload_arr
+    if [[ -n $PACSTALL_PAYLOAD && ! -f "${PACDIR}-pacdeps-${pacname}" ]]; then
+        mapfile -t payload_arr <<< "${PACSTALL_PAYLOAD//;:/$'\n'}"
     fi
-    if [[ $source_url != *://* ]]; then
-        if [[ -f "${PKGPATH}/${dest}" ]]; then
-            source_url="file://${PKGPATH}/${dest}"
-        else
-            if [[ -z ${REPO} ]]; then
-                REPO="$(head -n1 "${SCRIPTDIR}/repo/pacstallrepo")"
-            fi
-            # shellcheck disable=SC2031
-            source_url="${REPO}/packages/${pacname}/${source_url}"
+
+    for i in "${!source[@]}"; do
+        parse_source_entry "${source[$i]}"
+        expectedHash="${hash[$i]}"
+        if [[ -n ${payload_arr[*]} ]]; then
+            for p in "${!payload_arr[@]}"; do
+                if [[ ${payload_arr[$p]##*/} == "${dest}" ]]; then
+                    source_url="file://${payload_arr[$p]}"
+                fi
+            done
         fi
-    fi
-    case "${source_url}" in
-        *file://*)
-            source_url="${source_url#file://}"
-            source_url="${source_url#git+}"
-            file_down
-            ;;
-        *.git | git+*)
-            if [[ $source_url == git+* ]]; then
-                source_url="${source_url#git+}"
+        if [[ $source_url != *://* ]]; then
+            if [[ -f "${PKGPATH}/${dest}" ]]; then
+                source_url="file://${PKGPATH}/${dest}"
+            else
+                if [[ -z ${REPO} ]]; then
+                    REPO="$(head -n1 "${SCRIPTDIR}/repo/pacstallrepo")"
+                fi
+                # shellcheck disable=SC2031
+                source_url="${REPO}/packages/${pacname}/${source_url}"
             fi
-            git_down
-            ;;
-        *.deb)
-            net_down
-            deb_down && return 0
-            ;;
-        *.zip | *.tar.gz | *.tgz | *.tar.bz2 | *.tbz2 | *.tar.bz | *.tbz | *.tar.xz | *.txz | *.tar.zst | *.tzst | *.gz | *.bz2 | *.xz | *.lz | *.lzma | *.zst | *.7z | *.rar | *.lz4 | *.tar)
-            net_down
-            genextr_declare
-            genextr_down
-            ;;
-        *)
-            net_down
-            hashcheck_down
-            gather_down
-            ;;
-    esac
-    unset expectedHash dest source_url git_branch git_tag git_commit ext_deps ext_method
-done
-unset hashsum_method payload_arr
-
-if [[ -z ${_archive} ]]; then
-    export _archive="${srcdir}"
+        fi
+        case "${source_url,,}" in
+            *file://*)
+                source_url="${source_url#file://}"
+                source_url="${source_url#git+}"
+                file_down
+                ;;
+            *.git | git+*)
+                if [[ $source_url == git+* ]]; then
+                    source_url="${source_url#git+}"
+                fi
+                git_down
+                ;;
+            *.deb)
+                net_down
+                deb_down && return 0
+                ;;
+            *.zip | *.tar.gz | *.tgz | *.tar.bz2 | *.tbz2 | *.tar.bz | *.tbz | *.tar.xz | *.txz | *.tar.zst | *.tzst | *.gz | *.bz2 | *.xz | *.lz | *.lzma | *.zst | *.7z | *.rar | *.lz4 | *.tar)
+                net_down
+                genextr_declare "${source_url,,}"
+                genextr_down
+                ;;
+            *)
+                case "${dest,,}" in
+                    *.deb)
+                        net_down
+                        deb_down && return 0
+                        ;;
+                    *.zip | *.tar.gz | *.tgz | *.tar.bz2 | *.tbz2 | *.tar.bz | *.tbz | *.tar.xz | *.txz | *.tar.zst | *.tzst | *.gz | *.bz2 | *.xz | *.lz | *.lzma | *.zst | *.7z | *.rar | *.lz4 | *.tar)
+                        net_down
+                        genextr_declare "${dest,,}"
+                        genextr_down
+                        ;;
+                    *)
+                        net_down
+                        hashcheck_down
+                        gather_down
+                        ;;
+                esac
+                ;;
+        esac
+        unset expectedHash dest source_url to_location git_branch git_tag git_commit ext_deps ext_method ext_to_flag
+    done
+    unset hashsum_method payload_arr
 fi
+
 export pacdir="$PWD"
 sudo chown -R root:root . 2> /dev/null
 
@@ -333,20 +367,26 @@ export -f ask fancy_message select_options
 
 clean_logdir
 
-unset pac_functions
-if [[ $NOCHECK == true ]]; then
-    for i in "prepare" "build" "package${pkgbase:+_$pacname}"; do
-        if is_function "$i"; then
-            pac_functions+=("$i")
-        fi
-    done
+unset pac_functions pac_func_arr
+if ! [[ -f "${PACDIR}-no-download-${pkgbase}" ]]; then
+    if [[ $NOCHECK == true ]]; then
+        pac_func_arr=("prepare" "build" "package${pkgbase:+_$pacname}")
+    else
+        pac_func_arr=("prepare" "build" "check" "package${pkgbase:+_$pacname}")
+    fi
 else
-    for i in "prepare" "build" "check" "package${pkgbase:+_$pacname}"; do
-        if is_function "$i"; then
-            pac_functions+=("$i")
-        fi
-    done
+    if [[ $NOCHECK == true ]]; then
+        pac_func_arr=("package${pkgbase:+_$pacname}")
+    else
+        pac_func_arr=("check" "package${pkgbase:+_$pacname}")
+    fi
 fi
+
+for i in "${pac_func_arr[@]}"; do
+    if is_function "${i}"; then
+        pac_functions+=("${i}")
+    fi
+done
 if [[ -n ${pac_functions[*]} ]]; then
     fancy_message info $"Running functions"
     for function in "${pac_functions[@]}"; do

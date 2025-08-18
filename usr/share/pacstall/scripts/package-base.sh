@@ -55,13 +55,17 @@ function trap_ctrlc() {
 function package_override() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     # shellcheck disable=SC2031
-    local o all_ovars opac="${pacname}" obase="${pkgbase}" ovars=("gives" "pkgdesc" "url" "priority")
+    local o all_ovars ext_ovars ext_types look lbase opac="${pacname}" obase="${pkgbase}" ovars=("gives" "pkgdesc" "url" "priority")
+    ext_ovars=("gives" "depends" "checkdepends" "optdepends" "pacdeps" "provides" "checkconflicts" "conflicts" "breaks" "replaces" "enhances" "recommends" "suggests")
+    ext_types=("${CARCH}" "${AARCH}" "${DISTRO%:*}" "${DISTRO#*:}" "${DISTRO%:*}_${CARCH}" "${DISTRO#*:}_${CARCH}" "${DISTRO%:*}_${AARCH}" "${DISTRO#*:}_${AARCH}")
     all_ovars=("${ovars[@]}" "arch" "license" "depends" "checkdepends" "optdepends" "pacdeps" "provides" "checkconflicts" "conflicts" "breaks" "replaces" "enhances" "recommends" "suggests" "backup" "repology")
+    mapfile -t -O "${#all_ovars[@]}" all_ovars < <(for i in "${ext_ovars[@]}"; do printf "${i}_%s\n" "${ext_types[@]}"; done)
+    srcinfo.parse "${srcinfile}" "${pacname}"
     for o in "${all_ovars[@]}"; do
-        local look lbase
+        unset look lbase
         # shellcheck disable=SC2034
         local -n over="${o}"
-        mapfile -t look < <(unset "${pacstallvars[@]}" && srcinfo.match_pkg "${srcinfile}" "${o}" "${opac}")
+        srcinfo.match_pkg "look" "${pacname}" "${o}" "${opac}"
         if [[ -n ${look[*]} ]]; then
             if array.contains ovars "${o}"; then
                 # shellcheck disable=SC2178,SC2034
@@ -71,7 +75,7 @@ function package_override() {
                 over=("${look[@]}")
             fi
         else
-            mapfile -t lbase < <(unset "${pacstallvars[@]}" && srcinfo.match_pkg "${srcinfile}" "${o}" "pkgbase:${obase}")
+            srcinfo.match_pkg "lbase" "${pacname}" "${o}" "pkgbase:${obase}"
             if [[ -n ${lbase[*]} ]]; then
                 if array.contains ovars "${o}"; then
                     # shellcheck disable=SC2178,SC2034
@@ -82,7 +86,13 @@ function package_override() {
                 fi
             fi
         fi
+        if [[ -z ${look[*]} && -z ${lbase[*]} ]]; then
+            echo "unset ${o}" | sudo tee -a "${safeenv}" > /dev/null
+        else
+            declare -p "${o}" | sudo tee -a "${safeenv}" > /dev/null
+        fi
     done
+    srcinfo.cleanup "${pacname}"
 }
 
 function package_pkg() {
@@ -139,6 +149,11 @@ function package_pkg() {
                 if [[ -n ${pacnames[*]} ]]; then
                     fancy_message info $"Selecting packages %b" "${BCyan}${pacnames[*]%%:\ *}${NC}"
                     for pacname in "${pacnames[@]}"; do
+                        if [[ ${pacname} == "${pacnames[0]}" ]]; then
+                            rm -rf "${PACDIR}-no-download-${pkgbase}"
+                        else
+                            touch "${PACDIR}-no-download-${pkgbase}"
+                        fi
                         package_override
                         # shellcheck disable=SC2031
                         fancy_message info $"Packaging %b" "${GREEN}${pacname}${NC}"
@@ -156,6 +171,7 @@ function package_pkg() {
                 fi
             fi
             fancy_message info $"Cleaning up"
+            rm -rf "${PACDIR}-no-download-${pkgbase}"
             if is_apt_package_installed "${PACKAGE}-dummy-builddeps"; then
                 sudo apt-get purge "${PACKAGE}-dummy-builddeps" -y > /dev/null
             fi
@@ -164,6 +180,7 @@ function package_pkg() {
         fi
     else
         pacname="${pkgname}"
+        rm -rf "${PACDIR}-no-download-${pkgbase}"
         # shellcheck source=./misc/scripts/package.sh
         if ! source "$SCRIPTDIR/scripts/package.sh"; then
             # shellcheck disable=SC2031
@@ -221,9 +238,9 @@ DIR="$PWD"
 homedir="$(eval echo ~"$PACSTALL_USER")"
 export homedir
 
-sudo cp "${PACKAGE}.pacscript" /tmp
-sudo chmod a+r "/tmp/${PACKAGE}.pacscript"
-pacfile="$(readlink -f "/tmp/${PACKAGE}.pacscript")"
+sudo cp "${PACKAGE}.pacscript" "${PACTMP}"
+sudo chmod a+r "${PACTMP}/${PACKAGE}.pacscript"
+pacfile="$(readlink -f "${PACTMP}/${PACKAGE}.pacscript")"
 export pacfile
 mapfile -t FARCH < <(dpkg --print-foreign-architectures)
 CARCH="$(dpkg --print-architecture)"
@@ -234,7 +251,8 @@ case ${CARCH} in
 esac
 DISTRO="$(set_distro parent)"
 CDISTRO="$(set_distro)"
-export FARCH CARCH AARCH DISTRO CDISTRO
+KVER="$(uname -r)"
+export FARCH CARCH AARCH DISTRO CDISTRO KVER
 
 # Running source on an isolated env
 safe_source "${pacfile}"
@@ -243,8 +261,8 @@ if ! source "${safeenv}"; then
     error_log 12 "install $PACKAGE"
     clean_fail_down
 fi
-srcinfo.print_out > "/tmp/${PACKAGE}.SRCINFO"
-srcinfile="$(readlink -f "/tmp/${PACKAGE}.SRCINFO")"
+srcinfo.print_out > "${PACTMP}/${PACKAGE}.SRCINFO"
+srcinfile="$(readlink -f "${PACTMP}/${PACKAGE}.SRCINFO")"
 export srcinfile
 
 package_pkg

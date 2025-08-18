@@ -33,7 +33,7 @@
 # @arg $1 string A versioned string.
 function dep_const.apt_compare_to_constraints() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
-    local compare_pkg="${1}" split_up=() pkg_version pkg_versions stripped ret const_arch compare_type
+    local compare_pkg="${1}" split_up=() pkg_version pkg_versions stripped ret=1 const_arch compare_type
     dep_const.strip_description "${compare_pkg}" stripped
     dep_const.split_name_and_version "${stripped}" split_up
     if ((${#split_up[@]} == 1)); then
@@ -47,39 +47,39 @@ function dep_const.apt_compare_to_constraints() {
         *">"*) compare_type="gt" ;;
     esac
     const_arch="$(dep_const.get_arch "${split_up[0]}")"
-    if is_apt_package_installed "${split_up[0]}"; then
+    if is_apt_package_installed "${compare_pkg}"; then
         pkg_version="$(dpkg-query --showformat='${Version}' --show "${split_up[0]}")"
     else
         pkg_version="$(aptitude search --quiet --disable-columns "?exact-name(${split_up[0]%:*})?architecture(${const_arch})" -F "%V")"
+    fi
+    if [[ -n ${pkg_version} ]]; then
+        # Example: foo@1.2.4 where foo<=1.2.5 should return true (0), because 1.2.4 is less than 1.2.5
+        { dpkg --compare-versions "${pkg_version}" "${compare_type}" "${split_up[1]}"; ret=$?; }
+    else
+        pkg_version="$(aptitude search --quiet --disable-columns "?exact-name(${split_up[0]%:*})?architecture(all)" -F "%V")"
         if [[ -n ${pkg_version} ]]; then
-            # Example: foo@1.2.4 where foo<=1.2.5 should return true (0), because 1.2.4 is less than 1.2.5
             { dpkg --compare-versions "${pkg_version}" "${compare_type}" "${split_up[1]}"; ret=$?; }
         else
-            pkg_version="$(aptitude search --quiet --disable-columns "?exact-name(${split_up[0]%:*})?architecture(all)" -F "%V")"
-            if [[ -n ${pkg_version} ]]; then
-                { dpkg --compare-versions "${pkg_version}" "${compare_type}" "${split_up[1]}"; ret=$?; }
+            mapfile -t pkg_versions < <(aptitude search --quiet --disable-columns "?provides(^${split_up[0]%:*}$)?architecture(${const_arch})" -F "%V" \
+                | while read -r line; do
+                    if dpkg --compare-versions "${line}" "${compare_type}" "${split_up[1]}"; then
+                        echo "${line}"
+                    fi
+                done)
+            if [[ -n ${pkg_versions[*]} ]]; then
+                # let apt pick which one, we don't care, as long as the constraint was satisfied
+                ret=0
             else
-                mapfile -t pkg_versions < <(aptitude search --quiet --disable-columns "?provides(^${split_up[0]%:*}$)?architecture(${const_arch})" -F "%V" \
+                mapfile -t pkg_versions < <(aptitude search --quiet --disable-columns "?provides(^${split_up[0]%:*}$)?architecture(all)" -F "%V" \
                     | while read -r line; do
                         if dpkg --compare-versions "${line}" "${compare_type}" "${split_up[1]}"; then
                             echo "${line}"
                         fi
                     done)
                 if [[ -n ${pkg_versions[*]} ]]; then
-                    # let apt pick which one, we don't care, as long as the constraint was satisfied
                     ret=0
                 else
-                    mapfile -t pkg_versions < <(aptitude search --quiet --disable-columns "?provides(^${split_up[0]%:*}$)?architecture(all)" -F "%V" \
-                        | while read -r line; do
-                            if dpkg --compare-versions "${line}" "${compare_type}" "${split_up[1]}"; then
-                                echo "${line}"
-                            fi
-                        done)
-                    if [[ -n ${pkg_versions[*]} ]]; then
-                        ret=0
-                    else
-                        ret=1
-                    fi
+                    ret=1
                 fi
             fi
         fi
@@ -180,7 +180,7 @@ function dep_const.get_pipe() {
         if dep_const.apt_compare_to_constraints "${pkg}"; then
             dep_const.split_name_and_version "${pkg}" check_name
             pipe_arch="$(dep_const.get_arch "${check_name[0]}")"
-            if is_package_installed "${check_name[0]}" || is_apt_package_installed "${check_name[0]}"; then
+            if is_package_installed "${check_name[0]}" || is_apt_package_installed "${pkg}"; then
                 echo "${pkg}"
                 return 0
             else

@@ -33,7 +33,8 @@ export BPurple='\033[1;35m'
 METADIR="/var/lib/pacstall/metadata"
 LOGDIR="/var/log/pacstall/error_log"
 SCRIPTDIR="/usr/share/pacstall"
-PACDIR="/tmp/pacstall"
+PACTMP="${PACSTALL_TMPDIR:-/tmp}"
+PACDIR="${PACTMP}/pacstall"
 MAN8DIR="/usr/share/man/man8"
 MAN5DIR="/usr/share/man/man5"
 PODIR="${SCRIPTDIR}/po"
@@ -41,10 +42,25 @@ BASH_COMPLETION_DIR="/usr/share/bash-completion/completions"
 FISH_COMPLETION_DIR="/usr/share/fish/vendor_completions.d"
 PACSTALL_USER=$(logname 2> /dev/null || echo "${SUDO_USER:-${USER:-$(whoami)}}")
 
+if ! $(cd "${PACTMP}" 2> /dev/null); then
+    error_log 1 "init update"
+    fancy_message error $"Could not enter into %s" "${PACTMP}"
+    exit 1
+fi
+
+if ! command -v curl &> /dev/null; then
+    apt-get install -y -qq curl iputils-ping
+fi
+
+if ! command -v wget &> /dev/null; then
+    apt-get install -y -qq wget ca-certificates
+fi
+
 pacstall_deps=(
     "sudo" "wget" "build-essential" "unzip" "git"
     "zstd" "iputils-ping" "aptitude" "bubblewrap"
     "jq" "distro-info-data" "spdx-licenses" "gettext"
+    "curl" "iputils-ping" "ca-certificates"
 )
 
 echo -e "[${BGreen}+${NC}] INFO: Updating..."
@@ -76,8 +92,8 @@ for pkg in "${pacstall_deps[@]}"; do
     if ! dpkg -s "${pkg}" > /dev/null 2>&1; then
         if [[ ${pkg} == "spdx-licenses" ]]; then
             if [[ -z $(apt-cache search --names-only "^${pkg}$") ]]; then
-                sudo curl -s "http://ftp.debian.org/debian/pool/main/s/${pkg}/${pkg}_3.8+dfsg-3_all.deb" -o "/tmp/${pkg}.deb" && \
-                    sudo apt install "/tmp/${pkg}.deb" -y && sudo rm -f "/tmp/${pkg}.deb" && continue
+                sudo wget -q -O "/tmp/${pkg}.deb" "https://ftp.debian.org/debian/pool/main/s/${pkg}/${pkg}_3.21-1_all.deb" && \
+                    sudo apt install "${PACTMP}/${pkg}.deb" -y && sudo rm -f "${PACTMP}/${pkg}.deb" && continue
             fi
         fi
         to_install+=("${pkg}")
@@ -106,20 +122,20 @@ pacstall_scripts=(
     "bwrap" "srcinfo" "manage-repo"
 )
 for script in "${pacstall_scripts[@]}"; do
-    sudo curl -s -o "$SCRIPTDIR/scripts/${script}.sh" "${REPO}/misc/scripts/${script}.sh" &
+    sudo wget -q -O "$SCRIPTDIR/scripts/${script}.sh" "${REPO}/misc/scripts/${script}.sh" &
 done
 for lang in "${linguas[@]}"; do
-    sudo curl -s -o "${PODIR}/${lang}.po" "${REPO}/misc/po/${lang}.po" &
+    sudo wget -q -O "${PODIR}/${lang}.po" "${REPO}/misc/po/${lang}.po" &
 done
 # Remove renamed files
 for i in {error_log,download,download-local,install-local,build-local}.sh; do
     sudo rm -f "${SCRIPTDIR:?}/scripts/$i"
 done
-sudo curl -s -o "/usr/bin/pacstall" "${REPO}/pacstall" &
-sudo curl -s -o "${MAN8DIR}/pacstall.8" "${REPO}/misc/man/pacstall.8" &
-sudo curl -s -o "${MAN5DIR}/pacstall.5" "${REPO}/misc/man/pacstall.5" &
-sudo curl -s -o "${BASH_COMPLETION_DIR}/pacstall" "${REPO}/misc/completion/bash" &
-sudo curl -s -o "${FISH_COMPLETION_DIR}/pacstall.fish" "${REPO}/misc/completion/fish" &
+sudo wget -q -O "/usr/bin/pacstall" "${REPO}/pacstall" &
+sudo wget -q -O "${MAN8DIR}/pacstall.8" "${REPO}/misc/man/pacstall.8" &
+sudo wget -q -O "${MAN5DIR}/pacstall.5" "${REPO}/misc/man/pacstall.5" &
+sudo wget -q -O "${BASH_COMPLETION_DIR}/pacstall" "${REPO}/misc/completion/bash" &
+sudo wget -q -O "${FISH_COMPLETION_DIR}/pacstall.fish" "${REPO}/misc/completion/fish" &
 wait && stty "${tty_settings}"
 
 fancy_message sub $"Rebuilding translations"

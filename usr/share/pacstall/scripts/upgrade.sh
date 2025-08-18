@@ -69,17 +69,16 @@ function calc_repo_ver() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     local compare_repo="$1" compare_package="$2" compare_tmp compare_safe compare_pkgver compare_pkgrel compare_epoch compare_source comp compare_base
     unset comp_repo_ver
-    compare_tmp="$(sudo mktemp -p "${PACDIR}" -t "calc-repo-ver-$compare_package.XXXXXX")"
+    compare_tmp="$(sudo mktemp -p "${PACDIR}" "calc-repo-ver-$compare_package.XXXXXX")"
     compare_safe="${compare_tmp}"
     curl -fsSL "$compare_repo/packages/$compare_package/.SRCINFO" | sudo tee "${compare_safe}" > /dev/null || { ignore_stack=true; return 1; }
     sudo chown "${PACSTALL_USER}" "${compare_safe}"
-    compare_base="$(srcinfo.match_pkg "${compare_safe}" pkgbase)"
+    srcinfo.parse "${compare_safe}" "${compare_package}"
+    srcinfo.match_pkg "compare_base" "${compare_package}" "pkgbase"
     for comp in "pkgver" "pkgrel" "epoch"; do
-        local -n decomp="compare_${comp}"
-        # shellcheck disable=SC2034
-        decomp="$(srcinfo.match_pkg "${compare_safe}" "${comp}" "${compare_base}")"
+        srcinfo.match_pkg "compare_${comp}" "${compare_package}" "${comp}" "${compare_base}"
     done
-    mapfile -t compare_source < <(srcinfo.match_pkg "${compare_safe}" "source" "${compare_base}")
+    srcinfo.match_pkg "compare_source" "${compare_package}" "source" "${compare_base}"
     if [[ ${compare_package} == *-git ]]; then
         parse_source_entry "${compare_source[0]}"
         calc_git_pkgver
@@ -87,6 +86,7 @@ function calc_repo_ver() {
     else
         comp_repo_ver="${compare_epoch:+$compare_epoch:}${compare_pkgver}-pacstall${compare_pkgrel:-1}"
     fi
+    srcinfo.cleanup "${compare_package}"
     sudo rm -rf "${compare_safe:?}"
 }
 
@@ -99,7 +99,8 @@ case ${CARCH} in
 esac
 DISTRO="$(set_distro parent)"
 CDISTRO="$(set_distro)"
-export CARCH AARCH DISTRO CDISTRO
+KVER="$(uname -r)"
+export CARCH AARCH DISTRO CDISTRO KVER
 
 fancy_message info $"Checking for updates"
 
@@ -116,9 +117,9 @@ tput cnorm # Show cursor again
 list=("${update_order[@]}")
 
 mkdir -p "${PACDIR}"
-up_list="$(mktemp /tmp/XXXXXX-pacstall-up-list)"
-up_print="$(mktemp /tmp/XXXXXX-pacstall-up-print)"
-up_urls="$(mktemp /tmp/XXXXXX-pacstall-up-urls)"
+up_list="$(mktemp ${PACTMP}/XXXXXX-pacstall-up-list)"
+up_print="$(mktemp ${PACTMP}/XXXXXX-pacstall-up-print)"
+up_urls="$(mktemp ${PACTMP}/XXXXXX-pacstall-up-urls)"
 
 fancy_message sub $"Checking versions"
 
@@ -129,12 +130,12 @@ N="$(nproc)"
         ((n = n % N))
         ((n++ == 0)) && wait && stty "$tty_settings"
         (
-            unset _pkgbase
+            unset _pkgbase _remoterepo
             source "$METADIR/$i"
             if [[ -n ${_pkgbase} ]]; then
                 localbase="${_pkgbase}"
             else
-                localbase="${i}"
+                unset localbase
             fi
 
             # localver is the current version of the package
@@ -142,15 +143,35 @@ N="$(nproc)"
             # if localver does not end with the correct pacstall version format, append it
             [[ ! $localver =~ -pacstall[0-9]+$ && ! $localver =~ -pacstall[0-9]+~git[a-zA-Z0-9_-]{8}$ ]] && localver="${localver}-pacstall1"
 
+            if [[ -z "${_remoterepo}" ]]; then
+                _remoterepo="orphan"
+                sudo sed -i '/_remotebranch=/d' "$METADIR/$i"
+                echo '_remoterepo="orphan"' | sudo tee -a "$METADIR/$i" > /dev/null
+            fi
             case "${_remoterepo}" in
                 *"github.com"*)
                     remoterepo="${_remoterepo/'github.com'/'raw.githubusercontent.com'}/${_remotebranch}" ;;
                 *"gitlab.com"*)
-                    remoterepo="${_remoterepo}/-/raw/${_remotebranch}" ;;
+                    if [[ ${_remoterepo} != *"/-/raw/"* ]]; then
+                        remoterepo="${_remoterepo}/-/raw/${_remotebranch}"
+                    else
+                        remoterepo="${_remoterepo}"
+                    fi
+                ;;
                 *"git.sr.ht"*)
-                    remoterepo="${_remoterepo}/blob/${_remotebranch}" ;;
+                    if [[ ${_remoterepo} != *"/blob/"* ]]; then
+                        remoterepo="${_remoterepo}/blob/${_remotebranch}"
+                    else
+                        remoterepo="${_remoterepo}"
+                    fi
+                ;;
                 *"codeberg"*)
-                    remoterepo="${_remoterepo}/raw/branch/${_remotebranch}" ;;
+                    if [[ ${_remoterepo} != *"/raw/branch/"* ]]; then
+                        remoterepo="${_remoterepo}/raw/branch/${_remotebranch}"
+                    else
+                        remoterepo="${_remoterepo}"
+                    fi
+                ;;
                 *)
                     remoterepo="${_remoterepo}" ;;
             esac
@@ -162,7 +183,7 @@ N="$(nproc)"
             IDXMATCH=$(printf "%s\n" "${REPOS[@]}" | awk "\$1 ~ /^${remoterepo//\//\\/}$/ {print NR-1}")
 
             if [[ -n $IDXMATCH ]]; then
-                calc_repo_ver "$remoterepo" "$localbase" \
+                calc_repo_ver "$remoterepo" "${localbase:-${i}}" \
                     && remotever="${comp_repo_ver}"
                 unset comp_repo_ver
                 remoteurl="${REPOS[$IDXMATCH]}"
@@ -185,7 +206,7 @@ N="$(nproc)"
                     if [[ -n $IDXMATCH ]] && ((IDX == IDXMATCH)); then
                         continue
                     else
-                        calc_repo_ver "${REPOS[$IDX]}" "$localbase" \
+                        calc_repo_ver "${REPOS[$IDX]}" "${localbase:-${i}}" \
                             && ver="${comp_repo_ver}"
                         unset comp_repo_ver
                         if ver_compare "$alterver" "$ver"; then
@@ -211,8 +232,8 @@ N="$(nproc)"
 
             if [[ -n $remotever ]]; then
                 if ver_compare "$localver" "$remotever"; then
-                    if [[ -n ${_pkgbase} ]]; then
-                        echo "${_pkgbase}:${i}" | tee -a "${up_list}" > /dev/null
+                    if [[ -n ${localbase} ]]; then
+                        echo "${localbase}:${i}" | tee -a "${up_list}" > /dev/null
                     else
                         echo "$i" | tee -a "${up_list}" > /dev/null
                     fi
@@ -239,46 +260,48 @@ else
     echo -e "Upgradable: $(wc -l < "${up_print}")
 ${BOLD}$(cat "${up_print}")${NC}\n"
 
-    declare -A remotes=()
-    declare -A bases=()
-    while read -r pkg && read -r remote <&3; do
-        upgrade+=("${pkg#*:}")
-        remotes[${pkg#*:}]="${remote}"
-        [[ ${pkg} =~ ':' ]] && bases[${pkg#*:}]="${pkg%:*}"
-    done < "${up_list}" 3< "${up_urls}"
+    if [[ ! ${LIST_ONLY} ]]; then
+        declare -A remotes=()
+        declare -A bases=()
+        while read -r pkg && read -r remote <&3; do
+            upgrade+=("${pkg#*:}")
+            remotes[${pkg#*:}]="${remote}"
+            [[ ${pkg} =~ ':' ]] && bases[${pkg#*:}]="${pkg%:*}"
+        done < "${up_list}" 3< "${up_urls}"
 
-    dep_tree.loop_traits update_order "${upgrade[@]}"
-    dep_tree.trim_pacdeps update_order
-    upgrade=("${update_order[@]}")
+        dep_tree.loop_traits update_order "${upgrade[@]}"
+        dep_tree.trim_pacdeps update_order
+        upgrade=("${update_order[@]}")
 
-    export local='no'
-    if ! cd "$PACDIR" 2> /dev/null; then
-        error_log 1 "upgrade"
-        fancy_message error $"Could not enter %s" "${PACDIR}"
-        exit 1
+        export local='no'
+        if ! cd "$PACDIR" 2> /dev/null; then
+            error_log 1 "upgrade"
+            fancy_message error $"Could not enter %s" "${PACDIR}"
+            exit 1
+        fi
+        for to_upgrade in "${upgrade[@]}"; do
+            PACKAGE="${to_upgrade}"
+            ask $"Do you want to upgrade %b?" "${GREEN}${PACKAGE}${NC}" Y
+            if ((answer == 0)); then
+                continue
+            fi
+
+            export REPO="${remotes[${PACKAGE}]}"
+            if [[ -n ${bases[$PACKAGE]} ]]; then
+                CHILD="${PACKAGE}"
+                PACKAGE="${bases[$PACKAGE]}"
+                export CHILD PACKAGE
+            fi
+            export URL="$REPO/packages/$PACKAGE/$PACKAGE.pacscript"
+            # shellcheck source=./misc/scripts/get-pacscript.sh
+            if ! source "$SCRIPTDIR/scripts/get-pacscript.sh"; then
+                fancy_message error $"Failed to download the %b pacscript" "${GREEN}${PACKAGE}${NC}"
+                continue
+            fi
+            # shellcheck source=./misc/scripts/package-base.sh
+            source "$SCRIPTDIR/scripts/package-base.sh"
+        done
     fi
-    for to_upgrade in "${upgrade[@]}"; do
-        PACKAGE="${to_upgrade}"
-        ask $"Do you want to upgrade %b?" "${GREEN}${PACKAGE}${NC}" Y
-        if ((answer == 0)); then
-            continue
-        fi
-
-        export REPO="${remotes[${PACKAGE}]}"
-        if [[ -n ${bases[$PACKAGE]} ]]; then
-            CHILD="${PACKAGE}"
-            PACKAGE="${bases[$PACKAGE]}"
-            export CHILD PACKAGE
-        fi
-        export URL="$REPO/packages/$PACKAGE/$PACKAGE.pacscript"
-        # shellcheck source=./misc/scripts/get-pacscript.sh
-        if ! source "$SCRIPTDIR/scripts/get-pacscript.sh"; then
-            fancy_message error $"Failed to download the %b pacscript" "${GREEN}${PACKAGE}${NC}"
-            continue
-        fi
-        # shellcheck source=./misc/scripts/package-base.sh
-        source "$SCRIPTDIR/scripts/package-base.sh"
-    done
 fi
 
 rm -f "${up_list:?}" "${up_print:?}" "${up_urls:?}"

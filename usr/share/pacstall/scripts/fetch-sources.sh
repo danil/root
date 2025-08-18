@@ -32,11 +32,15 @@ source "${SCRIPTDIR}/scripts/build.sh" || {
 
 function parse_source_entry() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
-    unset source_url dest git_branch git_tag git_commit
+    unset source_url dest git_branch git_tag git_commit to_location
     local entry="$1"
     source_url="${entry#*::}"
     dest="${entry%%::*}"
-    if [[ $entry != *::* && $entry == *#*=* ]]; then
+    if [[ ${dest} == *"@"* ]]; then
+        to_location="${dest#*@}"
+        dest="${dest%@*}"
+    fi
+    if [[ ${entry} != *::* && ${entry} == *#*=* ]] || [[ -z ${dest} ]]; then
         dest="${source_url%%#*}"
         dest="${dest##*/}"
     fi
@@ -55,10 +59,8 @@ function parse_source_entry() {
             ;;
     esac
     source_url="${source_url%%#*}"
-    if [[ $entry == *::* ]]; then
-        dest="${entry%%::*}"
-    elif [[ $entry != *#*=* ]]; then
-        source_url="$entry"
+    if [[ ${entry} != *::* && ${entry} != *#*=* ]]; then
+        source_url="${entry}"
         dest="${source_url##*/}"
     fi
     if [[ ${dest} == *"?"* ]]; then
@@ -87,68 +89,83 @@ function calc_git_pkgver() {
 
 function genextr_declare() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
-    unset ext_method ext_deps
+    unset ext_method ext_deps ext_to_flag
     # shellcheck disable=SC2031,SC2034
-    case "${source_url,,}" in
+    case "${1}" in
         *.zip)
             ext_method="unzip -qo"
             ext_deps=("unzip")
+            ext_to_flag="-d"
             ;;
         *.tar.gz | *.tgz)
             ext_method="tar -xzf"
             ext_deps=("tar" "gzip")
+            ext_to_flag="-C"
             ;;
         *.tar.bz2 | *.tbz2 | *.tar.bz | *.tbz)
             ext_method="tar -xjf"
             ext_deps=("tar" "bzip2")
+            ext_to_flag="-C"
             ;;
         *.tar.xz | *.txz)
             ext_method="tar -xJf"
             ext_deps=("tar" "xz-utils")
+            ext_to_flag="-C"
             ;;
         *.tar.zst | *.tzst)
             ext_method="tar -xf"
             ext_deps=("tar" "zstd")
+            ext_to_flag="-C"
             ;;
         *.gz)
             ext_method="gunzip"
             ext_deps=("gzip")
+            ext_to_flag=">"
             ;;
         *.bz2)
             ext_method="bunzip2"
             ext_deps=("bzip2")
+            ext_to_flag=">"
             ;;
         *.xz)
             ext_method="unxz"
             ext_deps=("xz-utils")
+            ext_to_flag=">"
             ;;
         *.lz)
             ext_method="lzip -d"
             ext_deps=("lzip")
+            ext_to_flag=">"
             ;;
         *.lzma)
             ext_method="unlzma"
             ext_deps=("xz-utils")
+            ext_to_flag=">"
             ;;
         *.zst)
             ext_method="unzstd -q"
             ext_deps=("zstd")
+            ext_to_flag=">"
             ;;
         *.7z)
             ext_method="7za x"
             ext_deps=("p7zip-full")
+            ext_to_flag="-o"
             ;;
         *.rar)
             ext_method="unrar x -inul"
             ext_deps=("unrar")
+            ext_to_flag="none"
             ;;
         *.lz4)
             ext_method="lz4 -d"
             ext_deps=("liblz4-tool")
+            ext_to_flag=">"
             ;;
         *.tar)
             ext_method="tar -xf"
             ext_deps=("tar")
+            ext_to_flag="-C"
             ;;
     esac
 }
@@ -187,7 +204,7 @@ function fail_down() {
 
 function gather_down() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
-    export srcdir="${PACDIR}/${pacname}~${pkgver}"
+    export srcdir="${PACDIR}/${pkgbase:-${pacname}}~${pkgver}"
     mkdir -p "${srcdir}"
     cd "${srcdir}" || {
         error_log 1 "gather-main ${pacname}"
@@ -261,10 +278,6 @@ function git_down() {
             clean_fail_down
         fi
     fi
-    # if first source entry & archive is not set, this becomes archive
-    if [[ ${source[i]} == "${source[0]}" && -z ${_archive} ]]; then
-        export _archive="${PWD}"
-    fi
     # cd back to srcdir
     gather_down
 }
@@ -296,21 +309,36 @@ function genextr_down() {
     done
     if ${extract}; then
         fancy_message sub $"Extracting %b" "${CYAN}${dest}${NC}"
-        ${ext_method} "${dest}" 1>&1 2> /dev/null
+        if [[ -n ${to_location} ]]; then
+            mkdir -p "temp_ext"
+            case "${ext_to_flag}" in
+                ">")
+                    rm -rf "temp_ext"
+                    ${ext_method} -c "${dest}" > "${to_location}" 1>&1 2> /dev/null
+                    ;;
+                "-o")
+                    ${ext_method} "${dest}" -o"temp_ext" 1>&1 2> /dev/null
+                    ;;
+                "none")
+                    ${ext_method} "${dest}" "temp_ext" 1>&1 2> /dev/null
+                    ;;
+                *)
+                    ${ext_method} "${dest}" "${ext_to_flag}" "temp_ext" 1>&1 2> /dev/null
+                    ;;
+            esac
+            if [[ "${ext_to_flag}" != ">" ]]; then
+                # if more than one file/dir at the head of the extraction
+                # then create `to_location` as the head for the items
+                # instead of turning the single head file/dir into `to_location`
+                (($(find temp_ext/ -mindepth 1 -maxdepth 1 | wc -l)>1)) && mkdir -p "${to_location}"
+                mv temp_ext/* "${to_location}"
+                rm -rf "temp_ext"
+            fi
+        else
+            ${ext_method} "${dest}" 1>&1 2> /dev/null
+        fi
         if [[ -f ${dest} ]]; then
             rm -f "${dest:?}"
-        fi
-    fi
-    # if first source and extract is true, enter it for archive check
-    if [[ ${source[i]} == "${source[0]}" && ${extract} == "true" ]]; then
-        # cd in
-        cd ./*/ 2> /dev/null || {
-            error_log 1 "install ${pacname}"
-            fancy_message warn $"Could not enter into the extracted archive"
-        }
-        # if archive is not set and we entered something, this becomes archive
-        if [[ -z ${_archive} && ${PWD} != "${srcdir}" ]]; then
-            export _archive="${PWD}"
         fi
     fi
     # cd back to srcdir
@@ -337,7 +365,7 @@ function deb_down() {
             exit 1
         fi
     fi
-    if [[ -n ${pacdeps[*]} || ${depends[*]} || ${makedepends[*]} || ${checkdepends[*]} ]] && repacstall "${dest}" || sudo apt install -y -f ./"${dest}" 2> /dev/null; then
+    if [[ -n ${pacdeps[*]} || ${depends[*]} || ${makedepends[*]} || ${checkdepends[*]} ]] && repacstall "${dest}" || sudo apt install -y -f ./"${dest}" --allow-downgrades 2> /dev/null; then
         meta_log
         if [[ -f "${PACDIR}-pacdeps-$pacname" ]]; then
             sudo apt-mark auto "${gives:-$pacname}" 2> /dev/null
@@ -370,7 +398,7 @@ function deb_down() {
         sudo cp -r "${srcinfile}" "/var/cache/pacstall/${pacname}/${full_version}/.SRCINFO"
         sudo chmod o+r "/var/cache/pacstall/${pacname}/${full_version}/.SRCINFO"
         fancy_message info $"Done installing %b" "${BPurple}${pacname}${NC}"
-        unset expectedHash dest source_url git_branch git_tag git_commit ext_deps ext_method hashsum_method payload_arr
+        unset expectedHash dest source_url git_branch git_tag git_commit to_location ext_deps ext_method ext_to_flag hashsum_method payload_arr
         return 0
     else
         fancy_message error $"Failed to install the package"
@@ -385,30 +413,38 @@ function file_down() {
     fancy_message info $"Copying local archive %b" "${BPurple}${dest}${NC}"
     # shellcheck disable=SC2031
     cp -r "${source_url}" "${dest}" || fail_down
-    genextr_declare
-    if [[ ${dest} == *".deb" ]]; then
-        if deb_down; then
-            exit 0
-        else
-            clean_fail_down
-        fi
-    elif [[ -n ${ext_method} ]]; then
-        genextr_down
-    elif [[ ${source[i]} == "${source[0]}" && -d ${dest} ]]; then
-        # cd in
-        cd "./${dest}" 2> /dev/null || {
-            error_log 1 "install ${pacname}"
-            fancy_message warn $"Could not enter into the copied archive"
-        }
-        # if archive not exist and we entered, its here
-        if [[ -z ${_archive} && ${PWD} != "${srcdir}" ]]; then
-            export _archive="${PWD}"
-        fi
-    else
-        hashcheck_down
-    fi
-    # back to srcdir
-    gather_down
+    case "${source_url,,}" in
+        *.deb)
+            if deb_down; then
+                exit 0
+            else
+                clean_fail_down
+            fi
+            ;;
+        *.zip | *.tar.gz | *.tgz | *.tar.bz2 | *.tbz2 | *.tar.bz | *.tbz | *.tar.xz | *.txz | *.tar.zst | *.tzst | *.gz | *.bz2 | *.xz | *.lz | *.lzma | *.zst | *.7z | *.rar | *.lz4 | *.tar)
+            genextr_declare "${source_url,,}"
+            genextr_down
+            ;;
+        *)
+            case "${dest,,}" in
+                *.deb)
+                    if deb_down; then
+                        exit 0
+                    else
+                        clean_fail_down
+                    fi
+                    ;;
+                *.zip | *.tar.gz | *.tgz | *.tar.bz2 | *.tbz2 | *.tar.bz | *.tbz | *.tar.xz | *.txz | *.tar.zst | *.tzst | *.gz | *.bz2 | *.xz | *.lz | *.lzma | *.zst | *.7z | *.rar | *.lz4 | *.tar)
+                    genextr_declare "${dest,,}"
+                    genextr_down
+                    ;;
+                *)
+                    hashcheck_down
+                    gather_down
+                    ;;
+            esac
+            ;;
+    esac
 }
 
 # currently expecting: 1=hash 2=PACSTALL_KNOWN_SUMS 3=hashum_method 4=${CARCH}/${DISTRO} 5=${CARCH}
@@ -670,7 +706,7 @@ function check_builddepends() {
         return 0
     fi
     if dep_const.apt_compare_to_constraints "${build_dep}"; then
-        if ! is_apt_package_installed "${just_build[0]}"; then
+        if ! is_apt_package_installed "${build_dep}"; then
             echo "${realbuild}" >> "${PACDIR}-needed-${type}-${pacname}"
             just_arch="$(dep_const.get_arch "${just_build[0]}")"
             fancy_message sub $"%b [remote]" "${CYAN}${just_build[0]}${NC} ${GREEN}↑${YELLOW}↓${NC}"
@@ -707,7 +743,11 @@ function install_builddepends() {
         fi
         if [[ -n ${unsatisfied_builddepends[*]} ]]; then
             echo -ne "\t"
-            fancy_message error $"%b version(s) cannot be satisfied" "${CYAN}$(printf "${CYAN}%s${NC}, " "${unsatisfied_builddepends[@]}" | sed 's/, $/\n/')${NC}"
+            if ((${#unsatisfied_builddepends[@]} > 1)); then
+                fancy_message error $"%b versions cannot be satisfied" "${CYAN}$(printf "${CYAN}%s${NC}, " "${unsatisfied_builddepends[@]}" | sed 's/, $/\n/')${NC}"
+            else
+                fancy_message error $"%b version cannot be satisfied" "${CYAN}$(printf "${CYAN}%s${NC}, " "${unsatisfied_builddepends[@]}" | sed 's/, $/\n/')${NC}"
+            fi
         fi
         if [[ -n ${missing_builddepends[*]} || -n ${unsatisfied_builddepends[*]} ]]; then
             fancy_message info $"Cleaning up"
@@ -796,11 +836,26 @@ function compare_remote_version() {
         *"github.com"*)
             remoterepo="${_remoterepo/'github.com'/'raw.githubusercontent.com'}/${_remotebranch}" ;;
         *"gitlab.com"*)
-            remoterepo="${_remoterepo}/-/raw/${_remotebranch}" ;;
+            if [[ ${_remoterepo} != *"/-/raw/"* ]]; then
+                remoterepo="${_remoterepo}/-/raw/${_remotebranch}"
+            else
+                remoterepo="${_remoterepo}"
+            fi
+        ;;
         *"git.sr.ht"*)
-            remoterepo="${_remoterepo}/blob/${_remotebranch}" ;;
+            if [[ ${_remoterepo} != *"/blob/"* ]]; then
+                remoterepo="${_remoterepo}/blob/${_remotebranch}"
+            else
+                remoterepo="${_remoterepo}"
+            fi
+        ;;
         *"codeberg"*)
-            remoterepo="${_remoterepo}/raw/branch/${_remotebranch}" ;;
+            if [[ ${_remoterepo} != *"/raw/branch/"* ]]; then
+                remoterepo="${_remoterepo}/raw/branch/${_remotebranch}"
+            else
+                remoterepo="${_remoterepo}"
+            fi
+        ;;
         *)
             remoterepo="${_remoterepo}" ;;
     esac
@@ -811,18 +866,17 @@ function compare_remote_version() {
     fi
     remotever="$(
         unset pkgrel
-        remote_tmp="$(sudo mktemp -p "${PACDIR}" -t "compare-repo-ver-$crv_input.XXXXXX")"
+        remote_tmp="$(sudo mktemp -p "${PACDIR}" "compare-repo-ver-$crv_input.XXXXXX")"
         remote_safe="${remote_tmp}"
         # shellcheck disable=SC2034
         curl -fsSL "$remoterepo/packages/$crv_fetch/.SRCINFO" | sudo tee "${remote_safe}" > /dev/null || { ignore_stack=true; return 1; }
         sudo chown "${PACSTALL_USER}" "${remote_safe}"
-        crv_base="$(srcinfo.match_pkg "${remote_safe}" pkgbase)"
+        srcinfo.parse "${remote_safe}" "${crv_fetch}"
+        srcinfo.match_pkg "crv_base" "${crv_fetch}" "pkgbase"
         for remv in "pkgver" "pkgrel" "epoch"; do
-            local -n deremv="crv_${remv}"
-            # shellcheck disable=SC2034
-            deremv="$(srcinfo.match_pkg "${remote_safe}" "${remv}" "${crv_base}")"
+            srcinfo.match_pkg "crv_${remv}" "${crv_fetch}" "${remv}" "${crv_base}"
         done
-        mapfile -t crv_source < <(srcinfo.match_pkg "${remote_safe}" "source" "${crv_base}")
+        srcinfo.match_pkg "crv_source" "${crv_fetch}" "source" "${crv_base}"
         if [[ ${crv_input} == *-git ]]; then
             parse_source_entry "${crv_source[0]}"
             calc_git_pkgver
@@ -830,6 +884,7 @@ function compare_remote_version() {
         else
             echo "${crv_epoch:+$crv_epoch:}${crv_pkgver}-pacstall${crv_pkgrel:-1}"
         fi
+        srcinfo.cleanup "${crv_fetch}"
         sudo rm -rf "${remote_safe:?}"
     )" > /dev/null
     localver=$(source "${METADIR}/${crv_input}" && echo "${_version}")
@@ -843,6 +898,22 @@ function compare_remote_version() {
         echo "update"
     else
         echo "no"
+    fi
+}
+
+function compare_kernel() {
+    { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
+    local compare_kver="${1}" ckver_split
+    case "${compare_kver}" in
+        "<="*) ckver_split=("le" "${compare_kver##*<=}") ;;
+        ">="*) ckver_split=("ge" "${compare_kver##*>=}") ;;
+        "="*) ckver_split=("eq" "${compare_kver##*=}") ;;
+        "<"*) ckver_split=("lt" "${compare_kver##*<}") ;;
+        ">"*) ckver_split=("gt" "${compare_kver##*>}") ;;
+    esac
+    if ! dpkg --compare-versions "${KVER}" "${ckver_split[0]}" "${ckver_split[1]}"; then
+        fancy_message error $"Kernel version constraint for this Pacscript not satisfied: %b" "${BBlue}${compare_kver}${NC}"
+        { ignore_stack=true; return 1; }
     fi
 }
 

@@ -43,7 +43,7 @@ function safe_source() {
 
     safeenv="$(sudo mktemp -p "${PACDIR}")"
     sudo chmod +r "$safeenv"
-    bwrapenv="$(sudo mktemp -p "${PACDIR}" -t "bwrapenv.XXXXXXXXXX")"
+    bwrapenv="$(sudo mktemp -p "${PACDIR}" "bwrapenv.XXXXXXXXXX")"
     sudo chmod +r "$bwrapenv"
     export bwrapenv
     export safeenv
@@ -80,14 +80,14 @@ export safeenv
 EOF
     sudo chmod +x "$tmpfile"
     if [[ ${NOSANDBOX} == "true" ]]; then
-        sudo homedir="${homedir}" CARCH="${CARCH}" AARCH="${AARCH}" DISTRO="${DISTRO}" CDISTRO="${CDISTRO}" NCPU="${NCPU}" PACSTALL_USER="${PACSTALL_USER}" \
+        sudo homedir="${homedir}" CARCH="${CARCH}" AARCH="${AARCH}" DISTRO="${DISTRO}" CDISTRO="${CDISTRO}" KVER="${KVER}" NCPU="${NCPU}" PACSTALL_USER="${PACSTALL_USER}" \
             "$tmpfile" && sudo rm "$tmpfile"
     else
         sudo env - bwrap --unshare-all --die-with-parent --new-session --ro-bind / / \
-            --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run --dev-bind /dev/null /dev/null \
+            --proc /proc --dev /dev --tmpfs "$PACTMP" --tmpfs /run --dev-bind /dev/null /dev/null \
             --ro-bind "$input" "$input" --bind "$PACDIR" "$PACDIR" --ro-bind "$tmpfile" "$tmpfile" \
             --setenv homedir "$homedir" --setenv CARCH "$CARCH" --setenv AARCH "$AARCH" --setenv DISTRO "$DISTRO" \
-            --setenv CDISTRO "$CDISTRO" --setenv NCPU "$NCPU" --setenv PACSTALL_USER "$PACSTALL_USER" \
+            --setenv CDISTRO "$CDISTRO" --setenv KVER "$KVER" --setenv NCPU "$NCPU" --setenv PACSTALL_USER "$PACSTALL_USER" \
             "$tmpfile" && sudo rm "$tmpfile"
     fi
 }
@@ -122,20 +122,20 @@ EOF
         fi
     fi
     if [[ ${NOSANDBOX} == "true" ]]; then
-        sudo LOGDIR="${LOGDIR}" SCRIPTDIR="${SCRIPTDIR}" STAGEDIR="${STAGEDIR}" pkgdir="${pkgdir}" _archive="${_archive}" \
+        sudo LOGDIR="${LOGDIR}" SCRIPTDIR="${SCRIPTDIR}" STAGEDIR="${STAGEDIR}" pkgdir="${pkgdir}" pacname="${pacname}" pkgbase="${pkgbase:-${pacname}}" \
             srcdir="${srcdir}" git_pkgver="${git_pkgver}" homedir="${homedir}" CARCH="${CARCH}" AARCH="${AARCH}" \
-            DISTRO="${DISTRO}" CDISTRO="${CDISTRO}" NCPU="${NCPU}" PACSTALL_USER="${PACSTALL_USER}" TAR_OPTIONS='--no-same-owner' \
+            DISTRO="${DISTRO}" CDISTRO="${CDISTRO}" KVER="${KVER}" NCPU="${NCPU}" PACSTALL_USER="${PACSTALL_USER}" TAR_OPTIONS='--no-same-owner' \
             "$tmpfile" && sudo rm "$tmpfile"
     else
         # shellcheck disable=SC2086
         sudo bwrap --unshare-all ${share_net} --die-with-parent --new-session \
-            --ro-bind / / --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run ${dns_resolve} \
+            --ro-bind / / --proc /proc --dev /dev --tmpfs "$PACTMP" --tmpfs /run ${dns_resolve} \
             --dev-bind /dev/null /dev/null --tmpfs /root --tmpfs /home --setenv safeenv "$safeenv" \
             --bind "$STAGEDIR" "$STAGEDIR" --bind "$PACDIR" "$PACDIR" --setenv LOGDIR "$LOGDIR" \
             --setenv SCRIPTDIR "$SCRIPTDIR" --setenv STAGEDIR "$STAGEDIR" --setenv pkgdir "$pkgdir" \
-            --setenv _archive "$_archive" --setenv srcdir "$srcdir" --setenv git_pkgver "$git_pkgver" \
+            --setenv srcdir "$srcdir" --setenv git_pkgver "$git_pkgver" --setenv pacname "$pacname" --setenv pkgbase "${pkgbase:-${pacname}}" \
             --setenv homedir "$homedir" --setenv CARCH "$CARCH" --setenv AARCH "$AARCH" --setenv DISTRO "$DISTRO" \
-            --setenv CDISTRO "$CDISTRO"  --setenv NCPU "$NCPU" --setenv PACSTALL_USER "$PACSTALL_USER" --setenv TAR_OPTIONS '--no-same-owner' \
+            --setenv CDISTRO "$CDISTRO" --setenv KVER "$KVER" --setenv NCPU "$NCPU" --setenv PACSTALL_USER "$PACSTALL_USER" --setenv TAR_OPTIONS '--no-same-owner' \
             "$tmpfile" && sudo rm "$tmpfile"
     fi
 }

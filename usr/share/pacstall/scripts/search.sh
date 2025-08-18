@@ -59,45 +59,49 @@ function srclist.search() {
     function print_pkgbase_and_pkgname() {
         if (pkgbase != "") {
             print pkgbase, pkgbase_desc
-            if (pkgname != "") {
-                desc = (pkgname_desc != "" ? pkgname_desc : pkgbase_desc)
-                print pkgbase ":" pkgname, desc
+            for (i in pkgnames) {
+                desc = (pkgname_descs[i] != "" ? pkgname_descs[i] : pkgbase_desc)
+                print pkgbase ":" pkgnames[i], desc
             }
         }
     }
     /^---$/ {
-        if (pkgbase != "" && (pkgbase ~ kw || tolower(pkgbase_desc) ~ kw)) {
-            print_pkgbase_and_pkgname()
-            found = 1
-        } else if (pkgname != "" && (pkgname ~ kw || tolower(pkgname_desc) ~ kw)) {
-            print_pkgbase_and_pkgname()
-            found = 1
+        if (pkgbase != "") {
+            if (pkgbase ~ kw || tolower(pkgbase_desc) ~ kw || kw == "") {
+                print_pkgbase_and_pkgname()
+                found = 1
+            } else {
+                for (i in pkgnames) {
+                    desc = (pkgname_descs[i] != "" ? pkgname_descs[i] : pkgbase_desc)
+                    if (pkgnames[i] ~ kw || tolower(desc) ~ kw) {
+                        print pkgbase ":" pkgnames[i], desc
+                        found = 1
+                    }
+                }
+            }
         }
-        pkgname = ""; pkgbase = ""; pkgbase_desc = ""; pkgname_desc = ""; next
+        pkgbase = ""; pkgbase_desc = ""; delete pkgnames; delete pkgname_descs
+        next
     }
     /^[[:space:]]*pkgbase[[:space:]]*=/ {
         pkgbase = $2
         pkgbase_desc = ""
     }
     /^[[:space:]]*pkgname[[:space:]]*=/ {
-        if (pkgname != "") {
-            desc = (pkgname_desc != "" ? pkgname_desc : pkgbase_desc)
-            if (pkgname ~ kw || tolower(desc) ~ kw) {
-                print pkgbase ":" pkgname, desc
-                found = 1
-            }
-        }
-        pkgname = $2
-        pkgname_desc = ""
+        pkgnames[length(pkgnames) + 1] = $2
+        pkgname_descs[length(pkgnames)] = ""
     }
     /^[[:space:]]*pkgdesc[[:space:]]*=/ {
-        if (pkgname == "") {
-            pkgbase_desc = $2
+        if (length(pkgnames) == 0) {
+          pkgbase_desc = $2
         } else {
-            pkgname_desc = $2
+          pkgname_descs[length(pkgnames)] = $2
         }
-    }
+      }
     END {
+        if (pkgbase != "") {
+            print_pkgbase_and_pkgname()
+        }
         if (!found) {
             print "No matching packages found"
         }
@@ -387,7 +391,7 @@ while IFS= read -r URL; do
             REPOMSG=1
             continue
         elif ! check_url "${URL}/packagelist"; then
-            fancy_message error "%s\n" $"Cannot connect to Pacstall repo: %b" "${CYAN}${URL}${NC}"
+            fancy_message error $"Cannot connect to Pacstall repo: %b" "${CYAN}${URL}${NC}"
             fancy_message warn $"You can remove or fix the URL by editing %b" "$CYAN$SCRIPTDIR/repo/pacstallrepo$NC"
             REPOMSG=1
             continue
@@ -411,10 +415,12 @@ if ((${#any_masks[@]} != 0)); then
     for pkg in "${PACKAGELIST[@]}"; do
         if array.contains any_masks "${pkg}"; then
             unset "PACKAGELIST[$mask_itr]"
+            unset "URLLIST[$mask_itr]"
         fi
         { ignore_stack=true; ((mask_itr++)); }
     done
     PACKAGELIST=("${PACKAGELIST[@]}")
+    URLLIST=("${URLLIST[@]}")
     unset mask_itr
 fi
 

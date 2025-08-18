@@ -53,7 +53,7 @@ function deblog() {
 function clean_builddir() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     sudo rm -rf "${STAGEDIR:?}/${pacname:?}"
-    sudo rm -f "${STAGEDIR:?}/${pacname}.deb"
+    sudo rm -f "${STAGEDIR:?}/${pacname}_*.deb"
 }
 
 function check_gen_dep() {
@@ -103,7 +103,7 @@ function check_apt_dep() {
     fi
     # Add to the dependency list if already installed so it doesn't get autoremoved on upgrade
     echo "${real_dep}" >> "${PACDIR}-deps-${pacname}"
-    if ! is_apt_package_installed "${just_name[0]}"; then
+    if ! is_apt_package_installed "${dep}"; then
         fancy_message sub $"%b [remote]" "${BLUE}${just_name[0]} ${GREEN}↑${YELLOW}↓${NC}"
     else
         fancy_message sub $"%b [installed]" "${BLUE}${just_name[0]} ${GREEN}✓${NC}"
@@ -139,7 +139,7 @@ function check_opt_dep() {
     fi
     # Add to the dependency list if already installed so it doesn't get autoremoved on upgrade
     # If the package is not installed already, add it to the list. It's much easier for a user to choose from a list of uninstalled packages than every single one regardless of it's status
-    if ! is_apt_package_installed "${just_name[0]}"; then
+    if ((PACSTALL_INSTALL == 0)) || ! is_apt_package_installed "${opt}"; then
         echo "${realopt}: ${optdesc}" >> "${PACDIR}-suggested-optdeps-${pacname}"
     else
         echo "${realopt}" >> "${PACDIR}-already-installed-optdeps-${pacname}"
@@ -376,16 +376,11 @@ function makedeb() {
         export version="0${full_version}"
     fi
 
-    if [[ -n ${arch[*]} ]]; then
-        # If we have any or all in the arch, then the package works everywhere
-        if array.contains arch "any" || array.contains arch "all"; then
-            deblog "Architecture" "all"
-        else # If it doesn't but arch[@] exists we should log the current arch as the build arch
-            deblog "Architecture" "$(dpkg --print-architecture)"
-        fi
-    else # If arch[@] does not exist, we log it as all according to
-        # https://github.com/pacstall/pacstall/wiki/Pacscript-101#arch
+    # If we have all in the arch, then the package works everywhere
+    if array.contains arch "all"; then
         deblog "Architecture" "all"
+    else # If it doesn't but arch[@] exists we should log the current arch as the build arch
+        deblog "Architecture" "${CARCH}"
     fi
     deblog "Section" "Pacstall"
 
@@ -451,10 +446,6 @@ function makedeb() {
     fi
     deblog_depends provides "Provides"
 
-    if [[ -n ${conflicts[*]} ]]; then
-        deblog_depends conflicts "Conflicts"
-    fi
-
     if [[ -n ${breaks[*]} ]]; then
         deblog_depends breaks "Breaks"
     fi
@@ -474,7 +465,16 @@ function makedeb() {
     fi
 
     if [[ -n ${replaces[*]} ]]; then
+        for i in "${replaces[@]}"; do
+            if ! array.contains breaks "${i}" && ! array.contains conflicts "${i}"; then
+                conflicts+=("${i}")
+            fi
+        done
         deblog_depends replaces "Replaces"
+    fi
+
+    if [[ -n ${conflicts[*]} ]]; then
+        deblog_depends conflicts "Conflicts"
     fi
 
     if [[ -n ${url} ]]; then
@@ -497,14 +497,12 @@ function makedeb() {
 
     if [[ -n ${maintainer[*]} ]]; then
         deblog "Maintainer" "${maintainer[0]}"
-        if ((${#maintainer[@]} > 1)); then
-            # Since https://www.debian.org/doc/debian-policy/ch-controlfields.html#uploaders says that Maintainer can only have one field, shove the rest in Uploaders
-            local uploaders
-            printf -v uploaders '%s, ' "${maintainer[@]:1}"
-            printf -v uploaders '%s' "${uploaders%, }"
-            deblog "Uploaders" "${uploaders}"
-            unset uploaders
-        fi
+        # Since https://www.debian.org/doc/debian-policy/ch-controlfields.html#uploaders says that Maintainer can only have one field, shove the rest in Uploaders
+        local uploaders
+        printf -v uploaders '%s, ' "${maintainer[@]}"
+        printf -v uploaders '%s' "${uploaders%, }"
+        deblog "Uploaders" "${uploaders}"
+        unset uploaders
     else
         deblog "Maintainer" "Pacstall <pacstall@pm.me>"
     fi
@@ -660,10 +658,10 @@ function makedeb() {
     generate_changelog | sudo tee -a "$STAGEDIR/$pacname/DEBIAN/changelog" > /dev/null
 
     cd "$STAGEDIR" || { ignore_stack=true; return 1; }
-    if array.contains arch "${CARCH}" || array.contains arch "${AARCH}"; then
-        local deb_arch="${CARCH}"
-    else
+    if array.contains arch "all"; then
         local deb_arch="all"
+    else
+        local deb_arch="${CARCH}"
     fi
     createdeb "${pacname}" "${full_version}" "${deb_arch}"
     install_deb "${pacname}" "${full_version}" "${deb_arch}"
@@ -675,10 +673,9 @@ function install_deb() {
     if ((PACSTALL_INSTALL != 0)); then
         for pkg in "${replaces[@]}"; do
             if is_apt_package_installed "${pkg}"; then
+                # this is only required for essential packages. Otherwise use 'conflicts' with 'replaces'.
                 if [[ ${priority} == "essential" ]]; then
                     sudo apt-get remove -y "${pkg}" --allow-remove-essential
-                else
-                    sudo apt-get remove -y "${pkg}"
                 fi
             fi
         done
@@ -701,10 +698,11 @@ function install_deb() {
         if ! [[ -d /etc/apt/preferences.d/ ]]; then
             sudo mkdir -p /etc/apt/preferences.d
         fi
-        local combined_pinning=("${provides[@]}" "${gives:-${pacname}}")
-        echo "Package: ${combined_pinning[*]}" | sudo tee "/etc/apt/preferences.d/${pacname//./-}-pin" > /dev/null
-        echo "Pin: version *" | sudo tee -a "/etc/apt/preferences.d/${pacname//./-}-pin" > /dev/null
-        echo "Pin-Priority: -1" | sudo tee -a "/etc/apt/preferences.d/${pacname//./-}-pin" > /dev/null
+        if ! array.contains provides "${gives:-${pacname}}"; then
+            provides+=("${gives:-${pacname}}")
+        fi
+        echo -e "Package: ${provides[*]}\nPin: release o=*\nPin-Priority: -1\n" | sudo tee "/etc/apt/preferences.d/${pacname//./-}-pin" > /dev/null
+        echo -e "Package: ${provides[*]}\nPin: version ${full_version}\nPin-Priority: 100" | sudo tee -a "/etc/apt/preferences.d/${pacname//./-}-pin" > /dev/null
         return 0
     else
         sudo mv "$STAGEDIR/$debname.deb" "$PACDEB_DIR"
@@ -730,11 +728,20 @@ function repacstall() {
     sudo rm -rf "${unpackdir:?}"/*
     fancy_message sub $"Repacking %b" "${CYAN}${pacname/\-deb/}.deb${NC}"
     sudo dpkg-deb -R "${input_dest}" "${unpackdir}"
-    depends_line=$(awk '/^Depends:/ {print; exit}' "${upcontrol}")
+    sudo chmod 755 "${unpackdir}"
+    depends_line=$(awk '/^Depends:/ {gsub(/^Depends: /, ""); print; exit}' "${upcontrol}")
     if [[ -n ${depends_line} ]]; then
-        readarray -t depends_array <<< "$(echo "${depends_line#Depends: }" | tr ',' '\n')"
-        depends_array=("${depends_array[@]/# /}")
-        depends_array=("${depends_array[@]/% /}")
+        IFS=',' read -r -a depends_array <<< "${depends_line}"
+        for i in "${!depends_array[@]}"; do
+            # decompile constraints
+            depends_array[i]="${depends_array[i]// (= /=}"
+            depends_array[i]="${depends_array[i]// (<= /<=}"
+            depends_array[i]="${depends_array[i]// (>= />=}"
+            depends_array[i]="${depends_array[i]// (<< /<}"
+            depends_array[i]="${depends_array[i]// (>> />}"
+            depends_array[i]="${depends_array[i]//)/}"
+            depends_array[i]="${depends_array[i]# }"
+        done
     fi
     if [[ -n ${makedepends[*]} ]]; then
         # shellcheck disable=SC2076
@@ -776,6 +783,7 @@ function repacstall() {
             fi
         done
     fi
+    # recompile constraints
     dep_const.format_control depends_array depends_array_form
     dep_const.comma_array depends_array_form repac_depends_str
     sudo sed -i '/^Depends:/d' "${upcontrol}"
@@ -839,6 +847,8 @@ function write_meta() {
         if [[ -n ${pBRANCH} ]]; then
             echo "_remotebranch=\"$pBRANCH\""
         fi
+    else
+        echo '_remoterepo="orphan"'
     fi
     if [[ -n ${pacdeps[*]} ]]; then
         _pacdeps=("${pacdeps[@]}")
