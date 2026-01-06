@@ -50,10 +50,10 @@ function deblog() {
     echo "$key: ${content[*]}" | sudo tee -a "$STAGEDIR/$pacname/DEBIAN/control" > /dev/null
 }
 
-function clean_builddir() {
+function clean_stagedir() {
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     sudo rm -rf "${STAGEDIR:?}/${pacname:?}"
-    sudo rm -f "${STAGEDIR:?}/${pacname}_*.deb"
+    sudo rm -f "${STAGEDIR:?}/${pacname}_"*".deb"
 }
 
 function check_gen_dep() {
@@ -567,7 +567,7 @@ function makedeb() {
                 'declare -g NCPU="${PACSTALL_BUILD_CORES:-1}"' 'else' 'declare -g NCPU="$(nproc)"' 'fi'
             )
             echo '#!/bin/bash' | sudo tee "$STAGEDIR/$pacname/DEBIAN/$deb_post_file" > /dev/null
-            for pacmf_out in "${pac_min_functions[@]}"; do
+            for pacmf_out in "${pac_min_functions[@]}" "export STAGEDIR=${STAGEDIR}"; do
                 echo "${pacmf_out}" | sudo tee -a "$STAGEDIR/$pacname/DEBIAN/$deb_post_file" > /dev/null
             done
             {
