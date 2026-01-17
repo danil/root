@@ -1,3 +1,4 @@
+# ~~~~<danil@kutkevich.org>.
 [Unit]
 Description="Hourly mirrors private git repositories"
 
