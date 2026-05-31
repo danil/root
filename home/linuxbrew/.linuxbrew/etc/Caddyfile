@@ -9,9 +9,7 @@
 }
 
 danil.kutkevich.org {
-	root * /var/www/kutkevich.rf
-	file_server
-	encode gzip
+	redir https://github.com/danil
 
 	log {
 		output file /home/linuxbrew/.linuxbrew/var/log/caddy/danil.kutkevich.org.log {
@@ -22,9 +20,7 @@ danil.kutkevich.org {
 }
 
 danil.kutkevich.ru {
-	root * /var/www/kutkevich.rf
-	file_server
-	encode gzip
+	redir https://github.com/danil
 
 	log {
 		output file /home/linuxbrew/.linuxbrew/var/log/caddy/danil.kutkevich.ru.log {
