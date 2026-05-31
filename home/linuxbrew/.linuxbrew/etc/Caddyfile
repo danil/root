@@ -1,0 +1,51 @@
+{
+	admin off
+	log {
+		output file /home/linuxbrew/.linuxbrew/var/log/caddy/caddy.log {
+			roll_size 10MB
+			roll_keep 10
+		}
+	}
+}
+
+danil.kutkevich.org {
+	root * /var/www/kutkevich.rf
+	file_server
+	encode gzip
+
+	log {
+		output file /home/linuxbrew/.linuxbrew/var/log/caddy/danil.kutkevich.org.log {
+			roll_size 10MB
+			roll_keep 10
+		}
+	}
+}
+
+danil.kutkevich.ru {
+	root * /var/www/kutkevich.rf
+	file_server
+	encode gzip
+
+	log {
+		output file /home/linuxbrew/.linuxbrew/var/log/caddy/danil.kutkevich.ru.log {
+			roll_size 10MB
+			roll_keep 10
+		}
+	}
+}
+
+# куткевич.рф
+xn--b1afkfa1cg1b.xn--p1ai {
+	redir http://kutkevich.ru{uri}
+
+	log {
+		output file /home/linuxbrew/.linuxbrew/var/log/caddy/kutkevich.rf.log {
+			roll_size 10MB
+			roll_keep 10
+		}
+	}
+}
+
+http://, https:// {
+	redir http://kutkevich.ru{uri}
+}
