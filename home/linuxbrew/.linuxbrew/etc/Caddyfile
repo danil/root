@@ -1,0 +1,22 @@
+{
+	admin off
+	log {
+		output file /home/linuxbrew/.linuxbrew/var/log/caddy/caddy.log {
+			roll_size 10MB
+			roll_keep 10
+		}
+	}
+}
+
+localhost:54443 {
+	root /home/danil/src/html/localhost.example
+	file_server
+	encode gzip
+
+	log {
+		output file /home/linuxbrew/.linuxbrew/var/log/caddy/localhost.example.log {
+			roll_size 10MB
+			roll_keep 10
+		}
+	}
+}
