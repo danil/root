@@ -1,0 +1,1 @@
+/home/danil/.config/emacs/evil-collection-occur.el

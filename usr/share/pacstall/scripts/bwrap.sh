@@ -50,13 +50,17 @@ function safe_source() {
 
     sudo tee "$tmpfile" > /dev/null << EOF
 #!/bin/bash -a
-mapfile -t __OLD_ENV < <(compgen -A variable  -P "--unset ")
+declare __OLD_ENV=""
+mapfile -t __OLD_ENV < <(compgen -A variable | sort)
 readonly __OLD_ENV
 $(declare -pf def_colors) && def_colors
 $(for i in {ask,fancy_message,parse_source_entry,calc_git_pkgver}; do declare -pf "${i}"; done)
 source "${input}"
-mapfile -t NEW_ENV < <(/bin/env -0 \${__OLD_ENV[@]} | \
-    sed -ze 's/BASH_FUNC_\(.*\)%%=\(.*\)\$/\n/g;s/^\(.[[:alnum:]_]*\)=\(.*\)\$/\1/g'|tr '\0' '\n')
+mapfile -t NEW_ENV < <(
+    comm -13 --nocheck-order \
+    <(printf '%s\n' "\${__OLD_ENV[@]}" | sort) \
+    <(compgen -A variable | sort)
+)
 declare -p \${NEW_ENV[@]} >> "${bwrapenv}"
 declare -pf >> "${bwrapenv}"
 echo > "${safeenv}"
@@ -80,14 +84,17 @@ export safeenv
 EOF
     sudo chmod +x "$tmpfile"
     if [[ ${NOSANDBOX} == "true" ]]; then
-        sudo homedir="${homedir}" CARCH="${CARCH}" AARCH="${AARCH}" DISTRO="${DISTRO}" CDISTRO="${CDISTRO}" KVER="${KVER}" NCPU="${NCPU}" PACSTALL_USER="${PACSTALL_USER}" \
+        sudo homedir="${homedir}" CARCH="${CARCH}" AARCH="${AARCH}" \
+            DISTRO="${DISTRO}" DNUM="${DNUM}" CDISTRO="${CDISTRO}" CDNUM="${CDNUM}" \
+            KVER="${KVER}" NCPU="${NCPU}" PACSTALL_USER="${PACSTALL_USER}" \
             "$tmpfile" && sudo rm "$tmpfile"
     else
         sudo env - bwrap --unshare-all --die-with-parent --new-session --ro-bind / / \
             --proc /proc --dev /dev --tmpfs "$PACTMP" --tmpfs /run --dev-bind /dev/null /dev/null \
             --ro-bind "$input" "$input" --bind "$PACDIR" "$PACDIR" --ro-bind "$tmpfile" "$tmpfile" \
-            --setenv homedir "$homedir" --setenv CARCH "$CARCH" --setenv AARCH "$AARCH" --setenv DISTRO "$DISTRO" \
-            --setenv CDISTRO "$CDISTRO" --setenv KVER "$KVER" --setenv NCPU "$NCPU" --setenv PACSTALL_USER "$PACSTALL_USER" \
+            --setenv homedir "$homedir" --setenv CARCH "$CARCH" --setenv AARCH "$AARCH" \
+            --setenv DISTRO "$DISTRO"  --setenv DNUM "$DNUM" --setenv CDISTRO "$CDISTRO" --setenv CDNUM "$CDNUM" \
+            --setenv KVER "$KVER" --setenv NCPU "$NCPU" --setenv PACSTALL_USER "$PACSTALL_USER" \
             "$tmpfile" && sudo rm "$tmpfile"
     fi
 }
@@ -96,15 +103,18 @@ function bwrap_function() {
     # shellcheck disable=SC2034
     { ignore_stack=false; set -o pipefail; trap stacktrace ERR RETURN; }
     local func="$1"
-    tmpfile="$(sudo mktemp -p "${PWD}")"
+    tmpfile="$(sudo mktemp -p "${PACDIR}")"
     sudo tee -a "$tmpfile" > /dev/null << EOF
 #!/bin/bash -a
-mapfile -t OLD_ENV < <(compgen -A variable -P "--unset ")
 source ${bwrapenv}
+mapfile -t OLD_ENV < <(compgen -A variable | sort)
 ${func} 2>&1 "${LOGDIR}/$(printf '%(%Y-%m-%d_%T)T')-$name-$func.log" && FUNCSTATUS="\${PIPESTATUS[0]}" && \
 if [[ \$FUNCSTATUS ]]; then \
-    mapfile -t NEW_ENV < <(/bin/env -0 \${OLD_ENV[@]} | \
-        sed -ze 's/BASH_FUNC_\(.*\)%%=\(.*\)\$/\\n/g;s/^\\(.[[:alnum:]_]*\\)=\\(.*\\)\$/\\1/g'|tr '\0' '\n'); \
+    mapfile -t NEW_ENV < <(
+        comm -13 --nocheck-order \
+        <(printf '%s\n' "\${OLD_ENV[@]}" | sort) \
+        <(compgen -A variable | sort)
+    );
     declare -p \${NEW_ENV[@]} >> "${bwrapenv}"; \
 fi && ignore_stack=true && exit \$FUNCSTATUS
 EOF
@@ -124,7 +134,8 @@ EOF
     if [[ ${NOSANDBOX} == "true" ]]; then
         sudo LOGDIR="${LOGDIR}" SCRIPTDIR="${SCRIPTDIR}" STAGEDIR="${STAGEDIR}" pkgdir="${pkgdir}" pacname="${pacname}" pkgbase="${pkgbase:-${pacname}}" \
             srcdir="${srcdir}" git_pkgver="${git_pkgver}" homedir="${homedir}" CARCH="${CARCH}" AARCH="${AARCH}" \
-            DISTRO="${DISTRO}" CDISTRO="${CDISTRO}" KVER="${KVER}" NCPU="${NCPU}" PACSTALL_USER="${PACSTALL_USER}" TAR_OPTIONS='--no-same-owner' \
+            DISTRO="${DISTRO}" DNUM="${DNUM}" CDISTRO="${CDISTRO}" CDNUM="${CDNUM}" \
+            KVER="${KVER}" NCPU="${NCPU}" PACSTALL_USER="${PACSTALL_USER}" TAR_OPTIONS='--no-same-owner' \
             "$tmpfile" && sudo rm "$tmpfile"
     else
         # shellcheck disable=SC2086
@@ -134,8 +145,9 @@ EOF
             --bind "$STAGEDIR" "$STAGEDIR" --bind "$PACDIR" "$PACDIR" --setenv LOGDIR "$LOGDIR" \
             --setenv SCRIPTDIR "$SCRIPTDIR" --setenv STAGEDIR "$STAGEDIR" --setenv pkgdir "$pkgdir" \
             --setenv srcdir "$srcdir" --setenv git_pkgver "$git_pkgver" --setenv pacname "$pacname" --setenv pkgbase "${pkgbase:-${pacname}}" \
-            --setenv homedir "$homedir" --setenv CARCH "$CARCH" --setenv AARCH "$AARCH" --setenv DISTRO "$DISTRO" \
-            --setenv CDISTRO "$CDISTRO" --setenv KVER "$KVER" --setenv NCPU "$NCPU" --setenv PACSTALL_USER "$PACSTALL_USER" --setenv TAR_OPTIONS '--no-same-owner' \
+            --setenv homedir "$homedir" --setenv CARCH "$CARCH" --setenv AARCH "$AARCH" \
+            --setenv DISTRO "$DISTRO"  --setenv DNUM "$DNUM" --setenv CDISTRO "$CDISTRO" --setenv CDNUM "$CDNUM" \
+            --setenv KVER "$KVER" --setenv NCPU "$NCPU" --setenv PACSTALL_USER "$PACSTALL_USER" --setenv TAR_OPTIONS '--no-same-owner' \
             "$tmpfile" && sudo rm "$tmpfile"
     fi
 }

@@ -1,0 +1,1 @@
+/home/danil/.config/emacs/doom-todo-ivy.el

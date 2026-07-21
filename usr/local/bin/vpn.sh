@@ -1,1 +1,0 @@
-/home/danil/bin/vpn.sh

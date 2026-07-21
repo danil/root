@@ -559,6 +559,8 @@ function calc_distro() {
             distro_parent_number="$(awk -F',' -v ver="${distro_parent_vname}" '$3 == ver { gsub(" LTS", "", $1); print $1 }' "/usr/share/distro-info/${distro_parent}.csv")"
             if [[ ${distro_parent_vname} == "sid" ]]; then
                 distro_parent_number="sid"
+            elif [[ ${distro_parent_vname} == "devel" ]]; then
+                distro_parent_number="devel"
             fi
         fi
     fi
@@ -569,7 +571,13 @@ function set_distro() {
     local distro_name distro_version_name distro_version_number distro_parent distro_parent_vname distro_parent_number
     calc_distro
     if [[ ${1} == "parent" ]]; then
-        echo "${distro_parent:-${distro_name}}:${distro_parent_vname:-${distro_version_name}}"
+        if [[ ${2} == "number" ]]; then
+            echo "${distro_parent_number:-${distro_version_number}}"
+        else
+            echo "${distro_parent:-${distro_name}}:${distro_parent_vname:-${distro_version_name}}"
+        fi
+    elif [[ ${1} == "number" ]]; then
+        echo "${distro_version_number}"
     else
         echo "${distro_name}:${distro_version_name}"
     fi
