@@ -3,8 +3,7 @@
 #
 # Used by systemd --user instances.
 
-account  sufficient pam_unix.so no_pass_expiry
-account  required   pam_permit.so
+account  required   pam_unix.so no_pass_expiry
 
 session  required   pam_loginuid.so
 session  optional   pam_keyinit.so force revoke

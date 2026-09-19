@@ -1,1 +1,0 @@
-[ -z "$ZOOCFGDIR" ] && export ZOOCFGDIR="/home/linuxbrew/.linuxbrew/etc/zookeeper"
